@@ -8,13 +8,15 @@ Version: **0.1** (unstable; will break until 1.0).
 
 ## 1. Overview
 
-- Transport: **WebSocket** over HTTP/1.1. Server speaks plain `ws://`; TLS is the
-  reverse proxy's job.
+- Transport: **WebSocket** over HTTP/1.1. The server speaks `wss://` when
+  built-in TLS is configured (cert + key env vars set), otherwise plain
+  `ws://` — in which case a reverse proxy is expected to terminate TLS.
 - Authentication: **HTTP Basic** on the upgrade request. One user, configured in the
   server's environment.
-- Confidentiality: **transport-only.** TLS at the reverse proxy protects the wire;
-  the server itself sees clipboard contents in plaintext. This is by design — see
-  the README's threat-model section. There is **no** client-side encryption layer.
+- Confidentiality: **transport-only.** TLS (built-in via rustls or via a
+  reverse proxy) protects the wire; the server itself sees clipboard contents
+  in plaintext. This is by design — see the README's threat-model section.
+  There is **no** client-side encryption layer.
 - Topology: star. The server is a dumb hub that fans out frames to all
   authenticated peers except the sender. There is no persistent state on disk.
 
@@ -118,14 +120,14 @@ closing the socket. Codes are the §6 strings.
 ## 4. Security model
 
 clipboardwire v0.1 has **no application-layer cryptography**. Confidentiality and
-integrity on the wire come entirely from TLS terminating at a reverse proxy
-(Caddy / nginx / Traefik / Cloudflare Tunnel — operator's choice). The server
-processes plaintext clipboard contents in memory; whether it logs them is
-constrained by §3.1.
+integrity on the wire come from TLS — terminated either inside the server
+(`rustls`, when `CLIPBOARDWIRE_TLS_CERT_FILE` / `CLIPBOARDWIRE_TLS_KEY_FILE`
+are set) or at a reverse proxy in front of it. The server processes plaintext
+clipboard contents in memory; whether it logs them is constrained by §3.1.
 
 | Threat                                  | Mitigated?                                                            |
 | --------------------------------------- | --------------------------------------------------------------------- |
-| Network attacker reads clipboard        | yes, via TLS at the reverse proxy.                                    |
+| Network attacker reads clipboard        | yes, via TLS (built-in `rustls` or a reverse proxy).                  |
 | Network attacker tampers with clipboard | yes, via TLS.                                                         |
 | Server operator reads clipboard         | **no.** Out of threat model for v0.1.                                 |
 | Server disk / RAM theft                 | **no.** `last_clip` lives in process memory; logs may contain frame metadata. |

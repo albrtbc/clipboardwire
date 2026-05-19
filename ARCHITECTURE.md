@@ -73,9 +73,10 @@ core/src/
 | `tower-http`          | Request limits, optional access log layer  | Plugs into axum.                                                                                   |
 | `anyhow` / `thiserror`| Error plumbing                             | `thiserror` for typed library errors, `anyhow` only at the top of `main`.                          |
 
-**Not** used: any database crate, any TLS crate, any session/cookie crate, any
-templating engine, any cryptography crate (no application-layer encryption in
-v0.1). The server has zero persistent state.
+TLS comes from `axum-server` with the `tls-rustls` feature, plus `rustls`
+and `rustls-pemfile` for cert loading. **Not** used: any database crate, any
+session/cookie crate, any templating engine, any application-layer
+cryptography crate (no E2EE in v0.1). The server has zero persistent state.
 
 ### 2.3 Concurrency model
 
@@ -117,6 +118,8 @@ All config from environment variables, no config file:
 | `CLIPBOARDWIRE_PASSWORD_FILE` | unset                          | Path to a file containing the password (trailing newline trimmed). Mutually exclusive with `CLIPBOARDWIRE_PASSWORD`; one of the two must be set. Docker-secret friendly. |
 | `CLIPBOARDWIRE_MAX_CONNS`   | `64`                             | Cap (see `PROTOCOL.md` §5)             |
 | `CLIPBOARDWIRE_MAX_FRAME`   | `10485760`                       | Bytes                                  |
+| `CLIPBOARDWIRE_TLS_CERT_FILE` | unset                          | PEM cert file. When set together with `CLIPBOARDWIRE_TLS_KEY_FILE`, the server speaks `wss://`. |
+| `CLIPBOARDWIRE_TLS_KEY_FILE`  | unset                          | PEM private key file. Required iff `CLIPBOARDWIRE_TLS_CERT_FILE` is set. |
 | `RUST_LOG`                  | `clipboardwire_server=info`      | `tracing-subscriber` env filter        |
 
 Refusing to start without `USER`/`PASSWORD` is intentional — no "default
@@ -124,8 +127,8 @@ admin/admin".
 
 ### 2.5 Deployment
 
-- **Static binary.** Build with `--release`. Final size target for the unified
-  binary: < 10 MiB stripped (axum + arboard included).
+- **Static binary.** Build with `--release`. Final size: ~7 MiB stripped on
+  Linux, ~7 MiB on Windows (rustls + arboard + axum included).
 - **Native distro packages.** Built via `cargo-deb` (Debian, Ubuntu, Mint),
   `cargo-generate-rpm` (Fedora, RHEL, openSUSE) and a hand-written `PKGBUILD`
   for Arch. Each ships the binary plus a `clipboardwire.service` systemd unit
@@ -182,6 +185,7 @@ core/src/client/
 | `clap` (derive)        | CLI parsing                              | `--config`, `--server`, `--user`, etc.                             |
 | `tracing` + `tracing-subscriber` | Logging                        | Same stack as server.                                              |
 | `directories`          | Locate `~/.config/clipboardwire/`        | XDG/AppData-aware across platforms.                                |
+| `rustls` + `rustls-pemfile` + `webpki-roots` | `wss://` support       | Custom root store for self-signed certs, plus an opt-in "skip verification" verifier for trusted-LAN deployments. |
 | `anyhow` / `thiserror` | Error plumbing                           | Same pattern.                                                      |
 
 ### 3.3 Config file
@@ -198,6 +202,10 @@ password = "..."
 
 # Optional: polling interval for clipboard changes.
 poll_ms = 300
+
+# Optional: TLS trust configuration.
+# tls_ca_file  = "/etc/clipboardwire/ca.crt"   # extra root CA to trust
+# tls_insecure = false                          # set to true on LAN/VPN only
 ```
 
 Permissions: client refuses to start if the file is world-readable on Unix

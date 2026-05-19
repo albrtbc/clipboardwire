@@ -5,6 +5,7 @@
 
 pub mod clipboard;
 pub mod config;
+pub mod tls;
 pub mod transport;
 
 use anyhow::Result;

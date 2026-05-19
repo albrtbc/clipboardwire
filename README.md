@@ -3,9 +3,10 @@
 A from-scratch Rust clipboard-sync server and desktop client, inspired by the
 [ClipCascade](https://github.com/Sathvik-Rao/ClipCascade) project but redesigned for
 single-user, personal-use deployment on a trusted LAN or VPN. The goal is to replace
-the upstream Spring Boot server (and its always-on JVM) with a small static binary,
-relying on TLS at a reverse proxy for transport security rather than client-side
-encryption.
+the upstream Spring Boot server (and its always-on JVM) with a small static binary.
+TLS is built in (rustls) — point `clipboardwire serve` at a cert and key and it
+speaks `wss://` directly; no reverse proxy required, though one still works fine
+as a fallback.
 
 The project ships **one** binary, `clipboardwire`, with three modes selected by
 subcommand:
@@ -60,13 +61,48 @@ both server and client code, so the wire protocol is redesigned for simplicity. 
 | Sessions / cookies                   | Each WebSocket carries HTTP Basic credentials.                                                                                   |
 | Donation + system-info endpoints     | Not relevant.                                                                                                                    |
 | Scheduled tasks / system maintenance | Nothing to schedule.                                                                                                             |
-| Client-side AES E2EE                 | Threat model is LAN/VPN; TLS at the reverse proxy covers the wire. Server is in the trust boundary, which keeps the code minimal. |
+| Client-side AES E2EE                 | Threat model is LAN/VPN; TLS (built-in or via a reverse proxy) covers the wire. Server is in the trust boundary, which keeps the code minimal. |
 
-### Reverse proxy for TLS
+### TLS
 
-The server speaks plain HTTP/WebSocket. Anything beyond loopback should be fronted by
-Caddy / nginx / Traefik for TLS termination. This keeps the binary small and avoids
-shipping a cert-management story we don't need.
+`clipboardwire serve` speaks `wss://` directly when given a cert and key via
+`CLIPBOARDWIRE_TLS_CERT_FILE` / `CLIPBOARDWIRE_TLS_KEY_FILE`. The TLS stack is
+`rustls` (pure Rust, no OpenSSL system dep). If you'd rather front it with a
+reverse proxy (Caddy / nginx / Traefik) for cert management, leave those env
+vars unset and the server will speak plain `ws://`.
+
+**Quick self-signed cert (LAN/VPN only):**
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout key.pem -out cert.pem \
+  -days 3650 -subj '/CN=clipboardwire.lan' \
+  -addext 'subjectAltName=DNS:clipboardwire.lan,IP:192.168.1.10'
+```
+
+Each client then sets `tls_insecure = true` in its config (because rustls
+refuses to treat a self-signed end-entity cert as both root *and* leaf — the
+standard X.509 way is a CA + a separate server cert).
+
+**Proper PKI (validates without `tls_insecure`):**
+
+```sh
+# Make a tiny CA (do this once)
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout ca.key -out ca.crt -subj '/CN=clipboardwire-ca'
+
+# Make a server cert and sign it with the CA
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout server.key -out server.csr \
+  -subj '/CN=clipboardwire.lan' \
+  -addext 'subjectAltName=DNS:clipboardwire.lan,IP:192.168.1.10'
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
+  -CAcreateserial -out server.crt -days 3650 \
+  -copy_extensions copyall
+```
+
+Server uses `server.crt` + `server.key`; clients set `tls_ca_file = "ca.crt"`
+and full chain validation works.
 
 ## Repository layout
 
@@ -105,10 +141,10 @@ clipboardwire/
 
 ## Threat model (informal)
 
-- **Trusted:** the user's devices, the server host itself (operator, disk, RAM),
-  and any reverse proxy in front of the server.
-- **Untrusted:** the network path between devices and the server. TLS at the
-  reverse proxy is what protects clipboard contents in transit.
+- **Trusted:** the user's devices, the server host itself (operator, disk, RAM).
+- **Untrusted:** the network path between devices and the server. TLS
+  (terminated in the server via `rustls`, or by a reverse proxy if you'd
+  rather) is what protects clipboard contents in transit.
 - **Implication:** anyone who can read the server's memory or disk can read
   clipboard contents while a sync is happening. This is acceptable for a LAN or
   VPN deployment on hardware the user controls; it is **not** suitable for a

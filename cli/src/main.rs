@@ -82,7 +82,12 @@ async fn run_host(client_config_path: Option<&std::path::Path>) -> Result<()> {
     tracing::info!(addr = %addr, "hub listening (host mode)");
 
     let port = addr.port();
-    let loopback_url = format!("ws://127.0.0.1:{port}/sync");
+    let scheme = if server_cfg.tls_enabled() {
+        "wss"
+    } else {
+        "ws"
+    };
+    let loopback_url = format!("{scheme}://127.0.0.1:{port}/sync");
 
     let (user, password, poll_ms) = match client_config_path {
         Some(p) => {
@@ -97,6 +102,13 @@ async fn run_host(client_config_path: Option<&std::path::Path>) -> Result<()> {
         user,
         password,
         poll_ms,
+        // `host` connects to its own embedded server on loopback. If that
+        // server is configured for TLS, the cert is most likely self-signed
+        // and SAN'd for the public hostname rather than 127.0.0.1, so skip
+        // verification on the loopback hop. The blast radius is bounded to
+        // this in-process client.
+        tls_ca_file: None,
+        tls_insecure: server_cfg.tls_enabled(),
     };
 
     let server_task = tokio::spawn(async move {

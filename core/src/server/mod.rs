@@ -56,17 +56,67 @@ pub async fn bind(
     Ok((listener, addr))
 }
 
-/// Serve the hub on a pre-bound listener until `shutdown` resolves.
+/// Serve the hub on a pre-bound listener until `shutdown` resolves. Speaks
+/// `wss://` if `config.tls_enabled()`, plain `ws://` otherwise.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     config: ServerConfig,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    let (app, _hub_join) = build_app(config);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
+    if config.tls_enabled() {
+        serve_tls(listener, config, shutdown).await
+    } else {
+        let (app, _hub_join) = build_app(config);
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
+            .await
+            .context("axum::serve")?;
+        Ok(())
+    }
+}
+
+async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    config: ServerConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let cert = config
+        .tls_cert_file
+        .as_ref()
+        .expect("tls_enabled() returned true with no cert file");
+    let key = config
+        .tls_key_file
+        .as_ref()
+        .expect("tls_enabled() returned true with no key file");
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
         .await
-        .context("axum::serve")?;
+        .with_context(|| {
+            format!(
+                "loading TLS cert/key from {} and {}",
+                cert.display(),
+                key.display()
+            )
+        })?;
+
+    let std_listener = listener
+        .into_std()
+        .context("converting tokio listener to std")?;
+    std_listener
+        .set_nonblocking(true)
+        .context("set_nonblocking on TLS listener")?;
+    let handle = axum_server::Handle::new();
+    let handle_for_shutdown = handle.clone();
+    tokio::spawn(async move {
+        shutdown.await;
+        handle_for_shutdown.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
+    });
+
+    let (app, _hub_join) = build_app(config);
+    axum_server::from_tcp_rustls(std_listener, tls)
+        .handle(handle)
+        .serve(app.into_make_service())
+        .await
+        .context("axum_server::serve (tls)")?;
     Ok(())
 }
 

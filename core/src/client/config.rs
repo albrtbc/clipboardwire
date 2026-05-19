@@ -33,6 +33,16 @@ pub struct ClientConfig {
     /// Clipboard polling interval in milliseconds. Default 300.
     #[serde(default = "default_poll_ms")]
     pub poll_ms: u64,
+    /// Optional PEM-encoded CA bundle. Certificates here are trusted *in
+    /// addition to* the built-in Mozilla root list. Use this to trust a
+    /// self-signed server certificate.
+    #[serde(default)]
+    pub tls_ca_file: Option<std::path::PathBuf>,
+    /// **DANGEROUS.** When `true`, the client skips TLS certificate
+    /// validation entirely. Only safe on a fully trusted network (e.g.
+    /// loopback in `host` mode). Default `false`.
+    #[serde(default)]
+    pub tls_insecure: bool,
 }
 
 impl ClientConfig {

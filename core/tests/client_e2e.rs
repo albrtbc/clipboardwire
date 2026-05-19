@@ -26,6 +26,8 @@ async fn supervisor_round_trip_through_real_hub() {
         password: "hunter2".into(),
         max_conns: 8,
         max_frame_bytes: 1024 * 1024,
+        tls_cert_file: None,
+        tls_key_file: None,
     };
     let (app, _hub_join) = build_app(server_cfg);
     let _server_task = tokio::spawn(async move {
@@ -37,6 +39,8 @@ async fn supervisor_round_trip_through_real_hub() {
         user: "alice".into(),
         password: "hunter2".into(),
         poll_ms: 1000,
+        tls_ca_file: None,
+        tls_insecure: false,
     };
 
     // -- Client A: we inject a local clipboard change via a_events_tx --
@@ -87,6 +91,8 @@ async fn late_joiner_supervisor_applies_cached_clip() {
         password: "hunter2".into(),
         max_conns: 8,
         max_frame_bytes: 1024 * 1024,
+        tls_cert_file: None,
+        tls_key_file: None,
     };
     let (app, _hub_join) = build_app(server_cfg);
     let _server_task = tokio::spawn(async move {
@@ -98,6 +104,8 @@ async fn late_joiner_supervisor_applies_cached_clip() {
         user: "alice".into(),
         password: "hunter2".into(),
         poll_ms: 1000,
+        tls_ca_file: None,
+        tls_insecure: false,
     };
 
     // A publishes first.

@@ -23,6 +23,17 @@ pub struct ServerConfig {
     pub password: String,
     pub max_conns: usize,
     pub max_frame_bytes: usize,
+    /// PEM-encoded certificate chain. If `Some`, the server speaks `wss://`.
+    pub tls_cert_file: Option<PathBuf>,
+    /// PEM-encoded private key. Required if `tls_cert_file` is set.
+    pub tls_key_file: Option<PathBuf>,
+}
+
+impl ServerConfig {
+    /// Returns `true` if TLS is configured (both cert and key paths are set).
+    pub fn tls_enabled(&self) -> bool {
+        self.tls_cert_file.is_some() && self.tls_key_file.is_some()
+    }
 }
 
 impl ServerConfig {
@@ -57,12 +68,26 @@ impl ServerConfig {
             bail!("CLIPBOARDWIRE_MAX_FRAME must be at least 1");
         }
 
+        let tls_cert_file = env::var("CLIPBOARDWIRE_TLS_CERT_FILE")
+            .ok()
+            .map(PathBuf::from);
+        let tls_key_file = env::var("CLIPBOARDWIRE_TLS_KEY_FILE")
+            .ok()
+            .map(PathBuf::from);
+        if tls_cert_file.is_some() != tls_key_file.is_some() {
+            bail!(
+                "CLIPBOARDWIRE_TLS_CERT_FILE and CLIPBOARDWIRE_TLS_KEY_FILE must be set together"
+            );
+        }
+
         Ok(Self {
             bind,
             user,
             password,
             max_conns,
             max_frame_bytes,
+            tls_cert_file,
+            tls_key_file,
         })
     }
 }
@@ -118,6 +143,8 @@ mod tests {
                 "CLIPBOARDWIRE_PASSWORD_FILE",
                 "CLIPBOARDWIRE_MAX_CONNS",
                 "CLIPBOARDWIRE_MAX_FRAME",
+                "CLIPBOARDWIRE_TLS_CERT_FILE",
+                "CLIPBOARDWIRE_TLS_KEY_FILE",
             ] {
                 env::remove_var(v);
             }
@@ -182,6 +209,41 @@ mod tests {
         assert_eq!(cfg.bind.to_string(), "0.0.0.0:8484");
         assert_eq!(cfg.max_conns, 64);
         assert_eq!(cfg.max_frame_bytes, MAX_FRAME_BYTES);
+    }
+
+    #[test]
+    fn tls_disabled_by_default() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        set("CLIPBOARDWIRE_USER", "alice");
+        set("CLIPBOARDWIRE_PASSWORD", "pw");
+        let cfg = ServerConfig::from_env().unwrap();
+        assert!(!cfg.tls_enabled());
+        assert!(cfg.tls_cert_file.is_none());
+        assert!(cfg.tls_key_file.is_none());
+    }
+
+    #[test]
+    fn tls_enabled_when_both_files_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        set("CLIPBOARDWIRE_USER", "alice");
+        set("CLIPBOARDWIRE_PASSWORD", "pw");
+        set("CLIPBOARDWIRE_TLS_CERT_FILE", "/etc/clipboardwire/cert.pem");
+        set("CLIPBOARDWIRE_TLS_KEY_FILE", "/etc/clipboardwire/key.pem");
+        let cfg = ServerConfig::from_env().unwrap();
+        assert!(cfg.tls_enabled());
+    }
+
+    #[test]
+    fn tls_requires_both_cert_and_key() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        set("CLIPBOARDWIRE_USER", "alice");
+        set("CLIPBOARDWIRE_PASSWORD", "pw");
+        set("CLIPBOARDWIRE_TLS_CERT_FILE", "/etc/clipboardwire/cert.pem");
+        let err = ServerConfig::from_env().unwrap_err();
+        assert!(format!("{err}").contains("must be set together"));
     }
 
     #[test]

@@ -303,6 +303,8 @@ mod tests {
                 password: "hunter2".into(),
                 max_conns: 8,
                 max_frame_bytes: 1024,
+                tls_cert_file: None,
+                tls_key_file: None,
             }),
             conn_sem: Arc::new(Semaphore::new(8)),
         }

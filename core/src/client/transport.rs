@@ -26,6 +26,7 @@ use crate::protocol::{ClipFrame, Frame};
 use crate::server::auth::basic_header_value;
 
 use super::config::ClientConfig;
+use super::tls;
 
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
@@ -99,7 +100,12 @@ async fn connect_and_serve(
             .map_err(|e| anyhow!("auth header: {e}"))?,
     );
 
-    let (ws, _resp) = tokio_tungstenite::connect_async(req).await?;
+    let (ws, _resp) = if config.server.starts_with("wss://") {
+        let connector = tls::make_connector(config)?;
+        tokio_tungstenite::connect_async_tls_with_config(req, None, false, Some(connector)).await?
+    } else {
+        tokio_tungstenite::connect_async(req).await?
+    };
     info!("connected");
     let (mut sink, mut stream) = ws.split();
 
