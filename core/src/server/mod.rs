@@ -43,21 +43,38 @@ async fn healthz() -> &'static str {
     "ok\n"
 }
 
-/// Run the hub server until Ctrl-C (SIGINT) or SIGTERM.
-pub async fn run(config: ServerConfig) -> Result<()> {
+/// Bind a TcpListener without starting the server. Returns the listener and
+/// the actual local address (which may differ from `config.bind` when port 0
+/// is requested).
+pub async fn bind(
+    config: &ServerConfig,
+) -> Result<(tokio::net::TcpListener, std::net::SocketAddr)> {
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .with_context(|| format!("binding {}", config.bind))?;
-    let local = listener.local_addr().unwrap_or(config.bind);
-    info!(addr = %local, "listening");
+    let addr = listener.local_addr().unwrap_or(config.bind);
+    Ok((listener, addr))
+}
 
+/// Serve the hub on a pre-bound listener until `shutdown` resolves.
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    config: ServerConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     let (app, _hub_join) = build_app(config);
-
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown)
         .await
         .context("axum::serve")?;
+    Ok(())
+}
 
+/// Bind + serve in one call, using Ctrl-C / SIGTERM as the shutdown trigger.
+pub async fn run(config: ServerConfig) -> Result<()> {
+    let (listener, addr) = bind(&config).await?;
+    info!(addr = %addr, "listening");
+    serve(listener, config, shutdown_signal()).await?;
     info!("server exited");
     Ok(())
 }

@@ -7,5 +7,6 @@
 //!
 //! See `PROTOCOL.md` and `ARCHITECTURE.md` in the repository root.
 
+pub mod client;
 pub mod protocol;
 pub mod server;

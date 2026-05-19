@@ -19,6 +19,14 @@ subtle = "2"
 axum = { version = "0.8", features = ["macros", "ws"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 
+# client-side
+toml = "0.9"
+directories = "6"
+arboard = { version = "3", default-features = false }
+tokio-tungstenite = "0.29"
+http = "1"
+blake3 = "1"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
