@@ -2,20 +2,19 @@
 <!--
   clipboardwire WiX 3 source.
 
-  Builds a per-machine x64 MSI that installs `clipboardwire.exe` to
-  `%ProgramFiles%\clipboardwire\` and prepends the install dir to the system
-  PATH so users can run `clipboardwire connect --tray` from any shell.
+  Builds a per-machine x64 MSI that installs clipboardwire.exe to
+  %ProgramFiles%\clipboardwire\ and prepends the install dir to the system
+  PATH so the binary is on PATH from any shell.
 
-  Build:  cargo wix -p clipboardwire --nocapture
-  CI invocation is in .github/workflows/release.yml.
+  Build: see .github/workflows/release.yml for the cargo wix invocation.
 
   GUID policy:
-  * `UpgradeCode` is stable forever — never change it (rotating it breaks
-    MSI's upgrade detection).
+  * UpgradeCode is stable forever; never change it (rotating it would
+    break MSI's upgrade detection).
   * Per-component GUIDs are stable per file path; keep them stable across
-    versions so `MajorUpgrade` removes the old before installing the new.
+    versions so MajorUpgrade removes the old before installing the new.
 
-  License: GPL-3.0-or-later. SPDX-License-Identifier: GPL-3.0-or-later.
+  License: GPL-3.0-or-later.
 -->
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
   <Product

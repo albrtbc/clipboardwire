@@ -32,7 +32,9 @@ jobs:
         run: cargo deb -p clipboardwire --no-build
 
       - name: Build .rpm
-        run: cargo generate-rpm -p clipboardwire
+        # cargo-generate-rpm's -p flag is a path, not a package name (unlike
+        # cargo proper). Point it at the binary crate's manifest.
+        run: cargo generate-rpm -p cli
 
       - name: Rename raw binary for the release asset
         run: |
