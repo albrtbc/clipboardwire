@@ -177,14 +177,15 @@ pub fn spawn(max_clients: usize) -> (HubHandle, JoinHandle<()>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::SUPPORTED_CONTENT_TYPE;
+    use crate::protocol::TEXT_CONTENT_TYPE;
 
     fn dummy_clip(content: &str) -> ClipFrame {
         ClipFrame {
             id: Uuid::new_v4(),
             ts: 0,
-            content_type: SUPPORTED_CONTENT_TYPE.to_string(),
-            content: content.to_string(),
+            content_type: TEXT_CONTENT_TYPE.to_string(),
+            content: Some(content.to_string()),
+            content_b64: None,
             from: None,
         }
     }
@@ -207,7 +208,7 @@ mod tests {
         hub.publish(id_a, dummy_clip("hello")).await.unwrap();
 
         let received = rx_b.recv().await.expect("B should receive the clip");
-        assert_eq!(received.content, "hello");
+        assert_eq!(received.content.as_deref(), Some("hello"));
         assert_eq!(received.from, Some(id_a));
 
         // A should NOT receive its own publish.
@@ -236,7 +237,7 @@ mod tests {
         match result {
             RegisterResult::Accepted { last_clip } => {
                 let clip = last_clip.expect("late joiner should see the cached clip");
-                assert_eq!(clip.content, "cached");
+                assert_eq!(clip.content.as_deref(), Some("cached"));
                 assert_eq!(clip.from, Some(id_a));
             }
             other => panic!("expected Accepted, got {other:?}"),
@@ -313,8 +314,8 @@ mod tests {
 
         let m1 = rx_b.recv().await.unwrap();
         let m2 = rx_b.recv().await.unwrap();
-        assert_eq!(m1.content, "first");
-        assert_eq!(m2.content, "second");
+        assert_eq!(m1.content.as_deref(), Some("first"));
+        assert_eq!(m2.content.as_deref(), Some("second"));
     }
 
     #[tokio::test]

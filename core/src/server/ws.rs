@@ -29,9 +29,7 @@ use tokio::time::interval;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::protocol::{
-    ClipFrame, ErrorCode, ErrorFrame, Frame, WelcomeFrame, PROTOCOL_VERSION, SUPPORTED_CONTENT_TYPE,
-};
+use crate::protocol::{ClipFrame, ErrorCode, ErrorFrame, Frame, WelcomeFrame, PROTOCOL_VERSION};
 
 use super::auth::check_basic_auth;
 use super::config::ServerConfig;
@@ -206,11 +204,17 @@ async fn handle_socket(
             match msg {
                 Message::Text(s) => match serde_json::from_str::<Frame>(&s) {
                     Ok(Frame::Clip(mut clip)) => {
-                        if clip.content_type != SUPPORTED_CONTENT_TYPE {
+                        // The hub is content-type agnostic — v0.2 added image
+                        // payloads and reserves additional types for future
+                        // revisions. We only validate that the frame carries
+                        // exactly one of `content` / `content_b64` matching
+                        // its content_type.
+                        if let Err(reason) = clip.validate() {
+                            debug!(reason, "rejecting bad clip frame");
                             let _ = reader_internal_tx
                                 .send(Frame::Error(ErrorFrame {
-                                    code: ErrorCode::UnsupportedType,
-                                    message: format!("only {SUPPORTED_CONTENT_TYPE} is supported"),
+                                    code: ErrorCode::BadFrame,
+                                    message: reason.into(),
                                 }))
                                 .await;
                             break;
@@ -247,7 +251,7 @@ async fn handle_socket(
                     let _ = reader_internal_tx
                         .send(Frame::Error(ErrorFrame {
                             code: ErrorCode::BadFrame,
-                            message: "binary frames are not supported in v0.1".into(),
+                            message: "binary WebSocket frames are not supported".into(),
                         }))
                         .await;
                     break;

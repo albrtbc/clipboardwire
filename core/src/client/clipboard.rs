@@ -9,12 +9,16 @@
 //! 1. **Apply** any pending write requests (from the supervisor).
 //! 2. **Poll** the local clipboard for changes and emit any new value.
 //!
+//! v0.2 polls both text and image clipboard. Each kind has its own
+//! `last_seen` tracker so a copy of text doesn't clobber the image cache
+//! (or vice versa).
+//!
 //! Both directions are exposed as channels so the supervisor is portable and
 //! easily mockable: tests construct a [`Clipboard`] directly with their own
 //! channel ends, without ever spawning the real arboard thread.
 //!
 //! Echo-loop suppression: when we apply an inbound clip, we update the
-//! thread's `last_seen` tracker to the value we just wrote. The next poll
+//! thread's `last_seen_*` tracker to the value we just wrote. The next poll
 //! won't see it as "new" and so won't bounce it back to the hub.
 
 use std::sync::mpsc as smpsc;
@@ -28,6 +32,22 @@ use tracing::{debug, error, trace, warn};
 /// Default-buffer size for the outbound events channel.
 const EVENT_BUFFER: usize = 32;
 
+/// Owned RGBA image, in row-major order (4 bytes per pixel, R-G-B-A).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageBytes {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// A change to the local clipboard, emitted by the poll loop and accepted
+/// by the apply path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipChange {
+    Text(String),
+    Image(ImageBytes),
+}
+
 /// Async-side handle to a clipboard:
 /// - `events_rx` yields the local clipboard's content whenever it changes.
 /// - `apply_tx` requests that a value be written to the local clipboard.
@@ -35,15 +55,15 @@ const EVENT_BUFFER: usize = 32;
 /// Construct via [`spawn`] for the production arboard-backed loop, or
 /// directly (the fields are `pub`) for tests.
 pub struct Clipboard {
-    pub events_rx: mpsc::Receiver<String>,
-    pub apply_tx: smpsc::Sender<String>,
+    pub events_rx: mpsc::Receiver<ClipChange>,
+    pub apply_tx: smpsc::Sender<ClipChange>,
 }
 
 /// Spawn the arboard-backed clipboard thread. Returns the [`Clipboard`] handle
 /// and a [`JoinHandle`] so callers can wait on graceful shutdown.
 pub fn spawn(poll_ms: u64) -> Result<(Clipboard, JoinHandle<()>)> {
-    let (apply_tx, apply_rx) = smpsc::channel::<String>();
-    let (events_tx, events_rx) = mpsc::channel::<String>(EVENT_BUFFER);
+    let (apply_tx, apply_rx) = smpsc::channel::<ClipChange>();
+    let (events_tx, events_rx) = mpsc::channel::<ClipChange>(EVENT_BUFFER);
     let join = std::thread::Builder::new()
         .name("clipboardwire-clipboard".into())
         .spawn(move || run_arboard_loop(apply_rx, events_tx, poll_ms))?;
@@ -57,8 +77,8 @@ pub fn spawn(poll_ms: u64) -> Result<(Clipboard, JoinHandle<()>)> {
 }
 
 fn run_arboard_loop(
-    apply_rx: smpsc::Receiver<String>,
-    events_tx: mpsc::Sender<String>,
+    apply_rx: smpsc::Receiver<ClipChange>,
+    events_tx: mpsc::Sender<ClipChange>,
     poll_ms: u64,
 ) {
     let mut cb = match arboard::Clipboard::new() {
@@ -70,7 +90,11 @@ fn run_arboard_loop(
     };
     debug!(poll_ms, "clipboard thread started");
 
-    let mut last_seen: Option<String> = None;
+    // Per-kind last-seen trackers — copying text doesn't reset the image
+    // cache, so each medium needs its own slot.
+    let mut last_text: Option<String> = None;
+    let mut last_image: Option<ImageBytes> = None;
+
     let poll = Duration::from_millis(poll_ms);
     let mut next_poll = Instant::now() + poll;
 
@@ -78,19 +102,9 @@ fn run_arboard_loop(
         let now = Instant::now();
         let wait = next_poll.saturating_duration_since(now);
 
-        // Wait for the next write request, but no longer than until the next
-        // scheduled poll.
         match apply_rx.recv_timeout(wait) {
-            Ok(text) => {
-                trace!(len = text.len(), "applying clip");
-                if let Err(e) = cb.set_text(text.clone()) {
-                    warn!(error = %e, "clipboard set_text failed");
-                } else {
-                    // Suppress the echo we'd otherwise read back from the next poll.
-                    last_seen = Some(text);
-                }
-                // Keep draining writes back-to-back if more are queued —
-                // applying everything before we poll keeps us responsive.
+            Ok(change) => {
+                apply_change(&mut cb, change, &mut last_text, &mut last_image);
                 continue;
             }
             Err(smpsc::RecvTimeoutError::Timeout) => {}
@@ -102,34 +116,104 @@ fn run_arboard_loop(
 
         next_poll = Instant::now() + poll;
 
-        match cb.get_text() {
-            Ok(text) => {
-                if last_seen.as_deref() != Some(text.as_str()) {
-                    last_seen = Some(text.clone());
-                    match events_tx.try_send(text) {
-                        Ok(()) => {}
-                        Err(mpsc::error::TrySendError::Full(_)) => {
-                            warn!("events channel full; dropping clipboard change");
-                        }
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            debug!("events channel closed; clipboard thread exiting");
-                            return;
-                        }
-                    }
+        if let Some(change) = poll_clipboard(&mut cb, &mut last_text, &mut last_image) {
+            match events_tx.try_send(change) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    warn!("events channel full; dropping clipboard change");
                 }
-            }
-            Err(arboard::Error::ContentNotAvailable) => {
-                // Empty or non-text clipboard. Forget any cached text so a
-                // future text value will be reported as a change.
-                last_seen = None;
-            }
-            Err(e) => {
-                // Most often a transient X11/Wayland error while another app
-                // owns the clipboard. Don't spam logs.
-                trace!(error = %e, "clipboard get_text transient failure");
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    debug!("events channel closed; clipboard thread exiting");
+                    return;
+                }
             }
         }
     }
+}
+
+fn apply_change(
+    cb: &mut arboard::Clipboard,
+    change: ClipChange,
+    last_text: &mut Option<String>,
+    last_image: &mut Option<ImageBytes>,
+) {
+    match change {
+        ClipChange::Text(text) => {
+            trace!(kind = "text", len = text.len(), "applying clip");
+            if let Err(e) = cb.set_text(text.clone()) {
+                warn!(error = %e, "clipboard set_text failed");
+            } else {
+                *last_text = Some(text);
+            }
+        }
+        ClipChange::Image(img) => {
+            trace!(
+                kind = "image",
+                width = img.width,
+                height = img.height,
+                "applying clip"
+            );
+            let arboard_image = arboard::ImageData {
+                width: img.width as usize,
+                height: img.height as usize,
+                bytes: std::borrow::Cow::Owned(img.rgba.clone()),
+            };
+            if let Err(e) = cb.set_image(arboard_image) {
+                warn!(error = %e, "clipboard set_image failed");
+            } else {
+                *last_image = Some(img);
+            }
+        }
+    }
+}
+
+fn poll_clipboard(
+    cb: &mut arboard::Clipboard,
+    last_text: &mut Option<String>,
+    last_image: &mut Option<ImageBytes>,
+) -> Option<ClipChange> {
+    // Image first: on most platforms the image clipboard slot is distinct
+    // from the text slot, and screenshots are the common "I want this on
+    // another machine" case. We still check text every tick.
+    match cb.get_image() {
+        Ok(img) => {
+            let owned = ImageBytes {
+                width: img.width as u32,
+                height: img.height as u32,
+                rgba: img.bytes.into_owned(),
+            };
+            if last_image.as_ref() != Some(&owned) {
+                *last_image = Some(owned.clone());
+                return Some(ClipChange::Image(owned));
+            }
+        }
+        Err(arboard::Error::ContentNotAvailable) => {
+            // No image on the clipboard right now. Don't clear last_image:
+            // a *text* copy doesn't invalidate the prior image, and on
+            // X11/Wayland the image slot may transiently fail to read.
+        }
+        Err(e) => {
+            trace!(error = %e, "clipboard get_image transient failure");
+        }
+    }
+
+    match cb.get_text() {
+        Ok(text) => {
+            if last_text.as_deref() != Some(text.as_str()) {
+                *last_text = Some(text.clone());
+                return Some(ClipChange::Text(text));
+            }
+        }
+        Err(arboard::Error::ContentNotAvailable) => {
+            // Empty or non-text clipboard.
+            *last_text = None;
+        }
+        Err(e) => {
+            trace!(error = %e, "clipboard get_text transient failure");
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -140,34 +224,83 @@ mod tests {
     // construct Clipboard directly with test-controlled channels.
 
     #[tokio::test]
-    async fn supervisor_receives_events_via_channel() {
-        let (apply_tx, _apply_rx) = smpsc::channel::<String>();
-        let (events_tx, events_rx) = mpsc::channel::<String>(4);
+    async fn supervisor_receives_text_events() {
+        let (apply_tx, _apply_rx) = smpsc::channel::<ClipChange>();
+        let (events_tx, events_rx) = mpsc::channel::<ClipChange>(4);
         let cb = Clipboard {
             events_rx,
             apply_tx,
         };
 
-        // Simulate the clipboard thread emitting an event.
-        events_tx.send("hello".to_string()).await.unwrap();
+        events_tx
+            .send(ClipChange::Text("hello".to_string()))
+            .await
+            .unwrap();
         drop(events_tx);
 
         let mut cb = cb;
-        let v = cb.events_rx.recv().await.unwrap();
-        assert_eq!(v, "hello");
+        match cb.events_rx.recv().await.unwrap() {
+            ClipChange::Text(t) => assert_eq!(t, "hello"),
+            other => panic!("expected text change, got {other:?}"),
+        }
     }
 
-    #[test]
-    fn supervisor_can_send_apply_requests() {
-        let (apply_tx, apply_rx) = smpsc::channel::<String>();
-        let (_events_tx, events_rx) = mpsc::channel::<String>(4);
+    #[tokio::test]
+    async fn supervisor_receives_image_events() {
+        let (apply_tx, _apply_rx) = smpsc::channel::<ClipChange>();
+        let (events_tx, events_rx) = mpsc::channel::<ClipChange>(4);
         let cb = Clipboard {
             events_rx,
             apply_tx,
         };
 
-        cb.apply_tx.send("write me".into()).unwrap();
-        let got = apply_rx.recv().unwrap();
-        assert_eq!(got, "write me");
+        let img = ImageBytes {
+            width: 2,
+            height: 1,
+            rgba: vec![255, 0, 0, 255, 0, 255, 0, 255],
+        };
+        events_tx
+            .send(ClipChange::Image(img.clone()))
+            .await
+            .unwrap();
+        drop(events_tx);
+
+        let mut cb = cb;
+        match cb.events_rx.recv().await.unwrap() {
+            ClipChange::Image(got) => assert_eq!(got, img),
+            other => panic!("expected image change, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supervisor_can_send_apply_requests_for_both_kinds() {
+        let (apply_tx, apply_rx) = smpsc::channel::<ClipChange>();
+        let (_events_tx, events_rx) = mpsc::channel::<ClipChange>(4);
+        let cb = Clipboard {
+            events_rx,
+            apply_tx,
+        };
+
+        cb.apply_tx
+            .send(ClipChange::Text("write me".into()))
+            .unwrap();
+        cb.apply_tx
+            .send(ClipChange::Image(ImageBytes {
+                width: 1,
+                height: 1,
+                rgba: vec![1, 2, 3, 4],
+            }))
+            .unwrap();
+        match apply_rx.recv().unwrap() {
+            ClipChange::Text(t) => assert_eq!(t, "write me"),
+            other => panic!("expected text, got {other:?}"),
+        }
+        match apply_rx.recv().unwrap() {
+            ClipChange::Image(img) => {
+                assert_eq!(img.width, 1);
+                assert_eq!(img.rgba, vec![1, 2, 3, 4]);
+            }
+            other => panic!("expected image, got {other:?}"),
+        }
     }
 }

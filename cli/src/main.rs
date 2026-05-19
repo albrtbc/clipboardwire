@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#[cfg(windows)]
 mod tray;
 
 use std::path::PathBuf;
@@ -67,14 +66,7 @@ async fn main() -> Result<()> {
 
 async fn run_client(cfg: ClientConfig, tray: bool) -> Result<()> {
     if tray {
-        #[cfg(windows)]
-        {
-            return tray::run(cfg).await;
-        }
-        #[cfg(not(windows))]
-        {
-            tracing::warn!("--tray is Windows-only in v0.1; running headless");
-        }
+        return tray::run(cfg).await;
     }
     tokio::select! {
         res = clipboardwire_core::client::run(cfg) => res,

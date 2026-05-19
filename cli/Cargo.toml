@@ -19,8 +19,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
-
-[target.'cfg(windows)'.dependencies]
 tray-icon = "0.22"
 
 # -- Native packaging metadata --
@@ -60,3 +58,6 @@ assets = [
 ]
 [package.metadata.generate-rpm.requires]
 systemd = "*"
+gtk3 = "*"
+libayatana-appindicator-gtk3 = "*"
+libxdo = "*"

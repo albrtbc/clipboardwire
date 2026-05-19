@@ -274,24 +274,34 @@ too. Settle on one in implementation.)
 - **macOS.** `arboard` uses NSPasteboard. Polling against `changeCount` is
   cheap. Should work without changes.
 
-### 3.6 Tray UI (Windows)
+### 3.6 Tray UI (cross-platform)
 
-A thin Windows-only wrapper around the headless supervisor, gated by
-`#[cfg(windows)]` in `cli/src/tray.rs`. Builds a `tray_icon::TrayIcon` with
-a placeholder icon (drawn programmatically — no asset shipped) and a
-single "Quit" menu item, then spawns `client::run` as a tokio task and
-multiplexes three sources via `tokio::select!`:
+A thin wrapper around the headless supervisor in `cli/src/tray.rs`. Builds
+a `tray_icon::TrayIcon` with a placeholder icon (drawn programmatically —
+no asset shipped) and a single "Quit" menu item, then spawns `client::run`
+as a tokio task and multiplexes three sources via `tokio::select!`:
 
 1. The supervisor's `JoinHandle` (returns when the client exits).
 2. `MenuEvent::receiver()` (polled every 100 ms — the receiver is a
    `crossbeam_channel` so we can't await it directly).
 3. `tokio::signal::ctrl_c()` for clean shutdown from a terminal.
 
-The Linux build sees `cfg(not(windows))` for the module; the `--tray` flag
-falls through to the headless code path with a one-line warning. Adding a
-cross-platform tray would mean either splitting the Linux distro package
-in two (server-only vs. desktop) or forcing a GTK dep on headless servers
-— deferred to v0.2.
+Backends per platform (via `tray-icon` 0.22):
+
+- **Windows.** Win32 directly. No external runtime deps.
+- **Linux.** `libayatana-appindicator3` (GNOME/KDE-compatible). Requires
+  `libgtk-3-0`, `libayatana-appindicator3-1`, and `libxdo3` at runtime;
+  the distro packages declare these so `apt`/`dnf` install pulls them in.
+  On a truly headless server the binary won't even start because it's
+  dynamically linked against libgtk — see below for that escape hatch.
+- **macOS.** AppKit. No extra deps (will be tested when the macOS build
+  pipeline is added).
+
+**Headless-server build:** the tray dep is currently mandatory. If a user
+needs a binary with no GTK runtime deps (a Linux server with nothing X11
+installed) they can build from source — a `tray` feature flag (default
+on) is on the v0.3 backlog so distro maintainers can ship a separate
+`clipboardwire-server` package that omits the tray.
 
 ### 3.7 Supervisor
 

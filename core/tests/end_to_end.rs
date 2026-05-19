@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use clipboardwire_core::protocol::{
-    ClipFrame, Frame, WelcomeFrame, PROTOCOL_VERSION, SUPPORTED_CONTENT_TYPE,
+    ClipFrame, Frame, WelcomeFrame, PROTOCOL_VERSION, TEXT_CONTENT_TYPE,
 };
 use clipboardwire_core::server::auth::basic_header_value;
 use clipboardwire_core::server::{build_app, ServerConfig};
@@ -95,8 +95,9 @@ fn clip(content: &str) -> ClipFrame {
     ClipFrame {
         id: Uuid::new_v4(),
         ts: 0,
-        content_type: SUPPORTED_CONTENT_TYPE.to_string(),
-        content: content.to_string(),
+        content_type: TEXT_CONTENT_TYPE.to_string(),
+        content: Some(content.to_string()),
+        content_b64: None,
         from: None,
     }
 }
@@ -158,7 +159,7 @@ async fn clip_fans_out_to_peer_but_not_sender() {
     let Frame::Clip(received) = serde_json::from_str(&text).unwrap() else {
         panic!("expected clip frame");
     };
-    assert_eq!(received.content, "hello from A");
+    assert_eq!(received.content.as_deref(), Some("hello from A"));
     assert_eq!(received.from, Some(id_a));
 
     // A must NOT receive its own publish back. Give the hub a beat to settle
@@ -204,7 +205,7 @@ async fn late_joiner_sees_last_clip_in_welcome() {
         panic!("expected welcome variant");
     };
     let cached = last_clip.expect("late joiner should see cached last_clip");
-    assert_eq!(cached.content, "cached value");
+    assert_eq!(cached.content.as_deref(), Some("cached value"));
     assert_eq!(cached.from, Some(id_a));
 
     a.close(None).await.ok();

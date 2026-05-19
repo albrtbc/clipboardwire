@@ -141,6 +141,14 @@ clipboardwire/
   GitHub Actions builds for both platforms on every push and attaches
   `.deb` / `.rpm` / `.exe` / `.msi` artifacts to tagged releases.
 
+- **v0.2 — images + cross-platform tray.** Protocol v0.2 carries binary
+  payloads in a new `content_b64` field. The clipboard adapter polls both
+  text and image clipboards; the wire format is PNG inside base64. The
+  tray UI now builds on Linux (libgtk-3 / libayatana-appindicator3) and
+  macOS in addition to Windows. Files sync (clipboard "files" → byte
+  transfer) is deferred to v0.3 because it's effectively a file-transfer
+  feature on top of clipboard sync, not just a wire-format change.
+
 ## Threat model (informal)
 
 - **Trusted:** the user's devices, the server host itself (operator, disk, RAM).

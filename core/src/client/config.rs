@@ -60,9 +60,9 @@ impl ClientConfig {
 
     /// Platform-default path for the client config file:
     ///
-    /// - Linux:   `$XDG_CONFIG_HOME/clipboardwire/config.toml`
-    ///            (falls back to `~/.config/clipboardwire/config.toml`)
-    /// - macOS:   `~/Library/Application Support/clipboardwire/config.toml`
+    /// - Linux: `$XDG_CONFIG_HOME/clipboardwire/config.toml`
+    ///   (falls back to `~/.config/clipboardwire/config.toml`)
+    /// - macOS: `~/Library/Application Support/clipboardwire/config.toml`
     /// - Windows: `%APPDATA%\clipboardwire\config.toml`
     ///
     /// The Windows layout intentionally avoids `directories::ProjectDirs`'
@@ -82,10 +82,7 @@ impl ClientConfig {
         {
             let base = directories::BaseDirs::new()
                 .ok_or_else(|| anyhow!("could not locate the user's config directory"))?;
-            Ok(base
-                .config_dir()
-                .join("clipboardwire")
-                .join("config.toml"))
+            Ok(base.config_dir().join("clipboardwire").join("config.toml"))
         }
     }
 

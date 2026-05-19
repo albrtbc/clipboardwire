@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Windows-only system-tray UI wrapper around the headless client supervisor.
+//! System-tray UI wrapper around the headless client supervisor.
 //!
 //! Runs `clipboardwire_core::client::run` on the current tokio runtime while
 //! displaying a tray icon with a tooltip and a "Quit" menu item. On menu
 //! click or Ctrl-C the supervisor is aborted and the tray icon is dropped.
 //!
-//! Cross-platform tray UX is deferred to v0.2; on Linux/macOS the `--tray`
-//! flag falls through to the headless code path with a one-line warning.
-
-#![cfg(windows)]
+//! v0.2 enables this on Linux and macOS too. Linux uses the
+//! libayatana-appindicator backend that ships with virtually every
+//! mainstream desktop environment; on a truly headless server the binary
+//! requires `libgtk-3` and `libayatana-appindicator3` at runtime even
+//! when run without `--tray`, so server-only deployments may prefer to
+//! `cargo build --release` from source without these libs (a feature
+//! gate is on the v0.3 backlog).
 
 use anyhow::Result;
 use clipboardwire_core::client::ClientConfig;
