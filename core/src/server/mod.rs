@@ -5,6 +5,7 @@
 pub mod auth;
 pub mod config;
 pub mod hub;
+pub mod tls;
 pub mod ws;
 
 use std::sync::Arc;
@@ -56,23 +57,54 @@ pub async fn bind(
     Ok((listener, addr))
 }
 
-/// Serve the hub on a pre-bound listener until `shutdown` resolves. Speaks
-/// `wss://` if `config.tls_enabled()`, plain `ws://` otherwise.
+/// Serve the hub on a pre-bound listener until `shutdown` resolves.
+///
+/// Wire protocol decision tree:
+/// - `tls_disabled = true`  → plain `ws://` (LAN/VPN escape hatch).
+/// - cert+key paths set     → `wss://` using those files.
+/// - neither (the default)  → auto-generate (or reload) a self-signed
+///   cert under `state_dir` and serve `wss://` with it.
 pub async fn serve(
     listener: tokio::net::TcpListener,
-    config: ServerConfig,
+    mut config: ServerConfig,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
-    if config.tls_enabled() {
-        serve_tls(listener, config, shutdown).await
-    } else {
+    if config.tls_disabled {
         let (app, _hub_join) = build_app(config);
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown)
             .await
             .context("axum::serve")?;
-        Ok(())
+        return Ok(());
     }
+
+    if !config.tls_enabled() {
+        // Auto-gen mode: materialize a self-signed cert under state_dir
+        // (defaulting to a platform data dir) and promote the config to
+        // the explicit-files TLS path. Subsequent restarts find the
+        // same files on disk and reuse them.
+        let state_dir = resolved_state_dir(&config)?;
+        let ensured = tls::ensure_self_signed_cert(&state_dir, config.bind)
+            .context("ensuring self-signed TLS cert")?;
+        config.tls_cert_file = Some(ensured.cert_path);
+        config.tls_key_file = Some(ensured.key_path);
+    }
+
+    serve_tls(listener, config, shutdown).await
+}
+
+/// Resolve where to persist auto-generated TLS state. Order:
+/// 1. `config.state_dir` if set.
+/// 2. Platform data dir (`~/.local/share/clipboardwire/` on Linux,
+///    `~/Library/Application Support/clipboardwire/` on macOS,
+///    `%APPDATA%\clipboardwire\` on Windows).
+fn resolved_state_dir(config: &ServerConfig) -> Result<std::path::PathBuf> {
+    if let Some(d) = &config.state_dir {
+        return Ok(d.clone());
+    }
+    let base =
+        directories::BaseDirs::new().context("could not locate the platform's data directory")?;
+    Ok(base.data_dir().join("clipboardwire"))
 }
 
 async fn serve_tls(

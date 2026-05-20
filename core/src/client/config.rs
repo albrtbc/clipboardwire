@@ -95,12 +95,23 @@ pub struct HubConfig {
     #[serde(default = "default_hub_max_frame")]
     pub max_frame_bytes: usize,
     /// Optional PEM cert file. When set together with `tls_key_file`,
-    /// the hub speaks `wss://`.
+    /// the hub speaks `wss://` using these files. If both are unset and
+    /// `tls_disabled` is false, the hub auto-generates a self-signed
+    /// cert under `state_dir`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_cert_file: Option<PathBuf>,
     /// Optional PEM key file. Required iff `tls_cert_file` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tls_key_file: Option<PathBuf>,
+    /// Disable TLS entirely. The hub will serve plain `ws://` and skip
+    /// self-signed cert generation. LAN/VPN-only deployments only.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tls_disabled: bool,
+    /// Where the hub persists state across restarts (currently just the
+    /// auto-generated self-signed cert). Defaults to the parent dir of
+    /// the client config file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_dir: Option<PathBuf>,
 }
 
 impl Default for HubConfig {
@@ -114,6 +125,8 @@ impl Default for HubConfig {
             max_frame_bytes: default_hub_max_frame(),
             tls_cert_file: None,
             tls_key_file: None,
+            tls_disabled: false,
+            state_dir: None,
         }
     }
 }
@@ -130,6 +143,8 @@ impl HubConfig {
             max_frame_bytes: self.max_frame_bytes,
             tls_cert_file: self.tls_cert_file.clone(),
             tls_key_file: self.tls_key_file.clone(),
+            tls_disabled: self.tls_disabled,
+            state_dir: self.state_dir.clone(),
         }
     }
 }

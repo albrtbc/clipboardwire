@@ -54,6 +54,7 @@ fn main() -> Result<()> {
 
     init_tracing();
     let cli = Cli::parse();
+    let no_subcommand = cli.command.is_none();
     let cmd = cli.command.clone().unwrap_or(Command::Connect);
 
     // Settings mode owns the main thread for its own eframe/winit event
@@ -73,9 +74,11 @@ fn main() -> Result<()> {
         .build()
         .context("building tokio runtime")?;
 
-    // Tray mode owns the main thread for the native OS event loop (tao).
-    // Everything else runs as an async future via `block_on`.
-    let needs_tray = cli.tray && matches!(cmd, Command::Connect | Command::Host);
+    // Tray policy: tray mode is the default for desktop launches
+    // (`clipboardwire` with no subcommand, or a Start Menu shortcut
+    // launch). Explicit `--tray` keeps the old behavior. `serve` never
+    // gets a tray.
+    let needs_tray = matches!(cmd, Command::Connect | Command::Host) && (cli.tray || no_subcommand);
     if needs_tray {
         run_with_tray(runtime, cli, cmd)
     } else {
@@ -113,7 +116,7 @@ async fn run_headless(cli: Cli, cmd: Command) -> Result<()> {
             if cli.tray {
                 tracing::warn!("`--tray` is ignored in serve mode");
             }
-            let cfg = ServerConfig::from_env()?;
+            let cfg = resolve_server_config(cli.config.as_deref())?;
             clipboardwire_core::server::run(cfg).await
         }
         Command::Connect => {
@@ -123,6 +126,48 @@ async fn run_headless(cli: Cli, cmd: Command) -> Result<()> {
         Command::Host => run_host_headless(cli.config.as_deref()).await,
         Command::Settings => unreachable!("settings handled before runtime build"),
     }
+}
+
+/// Build the server config used by `clipboardwire serve`.
+///
+/// Sources, in order of precedence:
+/// 1. Env vars (`CLIPBOARDWIRE_*`) — always win.
+/// 2. The `[hub]` section of the TOML at `--config` (or the platform
+///    default if `--config` is not supplied and the file exists).
+/// 3. Built-in defaults from [`ServerConfig::from_env`].
+///
+/// The TOML's parent directory becomes the default `state_dir` so the
+/// auto-generated self-signed cert lands next to the config file rather
+/// than in a far-off platform data dir.
+fn resolve_server_config(config_path: Option<&std::path::Path>) -> Result<ServerConfig> {
+    let toml_path = match config_path {
+        Some(p) => Some(p.to_path_buf()),
+        None => ClientConfig::default_path().ok().filter(|p| p.exists()),
+    };
+
+    let base = if let Some(ref p) = toml_path {
+        match ClientConfig::load(p) {
+            Ok(client_cfg) => client_cfg.hub.map(|h| {
+                let mut sc = h.to_server_config();
+                if sc.state_dir.is_none() {
+                    sc.state_dir = p.parent().map(|d| d.to_path_buf());
+                }
+                sc
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    path = %p.display(),
+                    error = %format!("{e:#}"),
+                    "config file present but unreadable; falling back to env-only server config"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    ServerConfig::from_env_layered(base)
 }
 
 async fn run_client_headless(cfg: ClientConfig) -> Result<()> {
@@ -226,106 +271,78 @@ fn build_host_client_config(
 /// dispatches right-click, menu activation, etc. The tokio runtime stays
 /// alive on its worker threads for the duration of the loop.
 fn run_with_tray(runtime: tokio::runtime::Runtime, cli: Cli, cmd: Command) -> Result<()> {
-    let (config_path, initial_cfg, hub_handle) = match cmd {
-        Command::Connect => prepare_connect_tray_args(&runtime, cli.config.as_deref())?,
+    let (config_path, initial_cfg, host_hub_handle, auto_open_settings) = match cmd {
+        Command::Connect => {
+            let (path, cfg, auto_open) = prepare_connect_tray_args(cli.config.as_deref())?;
+            (path, cfg, None, auto_open)
+        }
         Command::Host => {
             let (path, cfg, hub) = prepare_host_tray_args(&runtime, cli.config.as_deref())?;
-            (path, Some(cfg), Some(hub))
+            (path, Some(cfg), Some(hub), false)
         }
         Command::Serve | Command::Settings => unreachable!("non-tray subcommand"),
     };
 
-    tray::run(runtime, config_path, initial_cfg, hub_handle)
+    tray::run(
+        runtime,
+        config_path,
+        initial_cfg,
+        host_hub_handle,
+        auto_open_settings,
+    )
 }
 
-type ConnectTrayArgs = (
-    PathBuf,
-    Option<ClientConfig>,
-    Option<tokio::task::JoinHandle<Result<()>>>,
-);
-
+/// Returns (config path, optional loaded config, auto-open-settings).
+/// The tray handles embedded-hub startup internally on the new flow.
 fn prepare_connect_tray_args(
-    runtime: &tokio::runtime::Runtime,
     override_path: Option<&std::path::Path>,
-) -> Result<ConnectTrayArgs> {
+) -> Result<(PathBuf, Option<ClientConfig>, bool)> {
     let path = match override_path {
         Some(p) => p.to_path_buf(),
         None => ClientConfig::default_path()
             .context("could not determine the default client config path")?,
     };
 
-    if override_path.is_none() && !path.exists() {
+    let template_written = if override_path.is_none() && !path.exists() {
         match ClientConfig::write_template(&path) {
-            Ok(()) => tracing::info!(
-                "no client config found; wrote a placeholder at {} — use the tray menu's \
-                 \"Edit config\" item to set the server URL and password",
-                path.display()
-            ),
-            Err(e) => tracing::warn!(
-                error = %format!("{e:#}"),
-                "could not write template config at {}",
-                path.display()
-            ),
+            Ok(()) => {
+                tracing::info!(
+                    "no client config found; wrote a placeholder at {} — the settings \
+                     dialog will open so you can fill it in",
+                    path.display()
+                );
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %format!("{e:#}"),
+                    "could not write template config at {}",
+                    path.display()
+                );
+                false
+            }
         }
-    }
+    } else {
+        false
+    };
 
-    let mut cfg = match ClientConfig::load(&path) {
-        Ok(c) => Some(c),
+    let (cfg, load_failed) = match ClientConfig::load(&path) {
+        Ok(c) => (Some(c), false),
         Err(e) => {
             tracing::warn!(
                 error = %format!("{e:#}"),
-                "no usable client config yet; tray will come up in needs-config state"
+                "no usable client config yet; tray will auto-open the settings dialog"
             );
-            None
+            (None, true)
         }
     };
 
-    // If `[hub] enabled = true`, bind a server in-process and rewrite
-    // the client's `server` URL to point at the loopback port.
-    let hub_handle = if let Some(c) = cfg.as_mut() {
-        maybe_start_embedded_hub(runtime, c)?
-    } else {
-        None
-    };
+    // Auto-open the settings dialog at startup if we don't have a
+    // usable config — that's the only path for a fresh install to
+    // become useful without the user discovering the tray menu.
+    let auto_open_settings = template_written || load_failed;
 
-    Ok((path, cfg, hub_handle))
-}
-
-/// If the loaded config asks for an embedded hub, bind+spawn it and
-/// override the client's server URL to point at 127.0.0.1 on the bound
-/// port. Returns the server's JoinHandle so the tray can keep it alive.
-fn maybe_start_embedded_hub(
-    runtime: &tokio::runtime::Runtime,
-    cfg: &mut ClientConfig,
-) -> Result<Option<tokio::task::JoinHandle<Result<()>>>> {
-    let Some(hub) = cfg.hub.as_ref().filter(|h| h.enabled).cloned() else {
-        return Ok(None);
-    };
-
-    let server_cfg = hub.to_server_config();
-    let (listener, addr) = runtime
-        .block_on(clipboardwire_core::server::bind(&server_cfg))
-        .with_context(|| format!("binding embedded hub to {}", server_cfg.bind))?;
-    tracing::info!(
-        addr = %addr,
-        "embedded hub bound (from `[hub]` in client config)"
-    );
-
-    let scheme = if server_cfg.tls_enabled() {
-        "wss"
-    } else {
-        "ws"
-    };
-    cfg.server = format!("{scheme}://127.0.0.1:{}/sync", addr.port());
-    // SAN almost never covers 127.0.0.1; skip TLS verify on the loopback hop.
-    if server_cfg.tls_enabled() {
-        cfg.tls_insecure = true;
-    }
-
-    let handle = runtime.spawn(async move {
-        clipboardwire_core::server::serve(listener, server_cfg, std::future::pending()).await
-    });
-    Ok(Some(handle))
+    Ok((path, cfg, auto_open_settings))
 }
 
 /// Returns (a stand-in path for the tray's Edit-config menu, client_cfg,

@@ -27,10 +27,21 @@ pub struct ServerConfig {
     pub tls_cert_file: Option<PathBuf>,
     /// PEM-encoded private key. Required if `tls_cert_file` is set.
     pub tls_key_file: Option<PathBuf>,
+    /// Disable TLS entirely — serve plain `ws://` even when no cert is set.
+    /// Without this flag and without explicit cert paths, the hub
+    /// auto-generates a self-signed cert under `state_dir` (see below).
+    pub tls_disabled: bool,
+    /// Directory for state the hub persists across restarts (currently
+    /// just the auto-generated self-signed TLS cert + key). If `None`,
+    /// the auto-gen code falls back to a platform data dir.
+    pub state_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
-    /// Returns `true` if TLS is configured (both cert and key paths are set).
+    /// Returns `true` if TLS is configured with explicit cert files.
+    /// Auto-generated certs flow through a separate code path in
+    /// [`crate::server::serve`] that wraps the config and routes
+    /// through the TLS path — they don't flip this flag.
     pub fn tls_enabled(&self) -> bool {
         self.tls_cert_file.is_some() && self.tls_key_file.is_some()
     }
@@ -80,6 +91,12 @@ impl ServerConfig {
             );
         }
 
+        let tls_disabled = env_bool("CLIPBOARDWIRE_TLS_DISABLE")?;
+        let state_dir = env::var("CLIPBOARDWIRE_STATE_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+
         Ok(Self {
             bind,
             user,
@@ -88,7 +105,108 @@ impl ServerConfig {
             max_frame_bytes,
             tls_cert_file,
             tls_key_file,
+            tls_disabled,
+            state_dir,
         })
+    }
+
+    /// Like [`Self::from_env`] but with an optional base (typically from
+    /// a TOML config) whose fields are used wherever the corresponding
+    /// env var is unset. Env always wins; TOML fills gaps; defaults fill
+    /// what neither provided.
+    ///
+    /// `clipboardwire serve` calls this so a NAS-grade install can keep
+    /// its settings in `~/.config/clipboardwire/config.toml` instead of
+    /// a systemd-unit Environment= block, while still letting an
+    /// operator override one field via an env var.
+    pub fn from_env_layered(base: Option<Self>) -> Result<Self> {
+        let Some(base) = base else {
+            return Self::from_env();
+        };
+
+        let bind = match env::var("CLIPBOARDWIRE_BIND") {
+            Ok(s) => s
+                .parse::<SocketAddr>()
+                .context("CLIPBOARDWIRE_BIND must be a host:port")?,
+            Err(_) => base.bind,
+        };
+        let user = match env::var("CLIPBOARDWIRE_USER") {
+            Ok(u) if !u.is_empty() => u,
+            Ok(_) => bail!("CLIPBOARDWIRE_USER must not be empty"),
+            Err(_) => base.user,
+        };
+        let password = match (
+            env::var("CLIPBOARDWIRE_PASSWORD").ok(),
+            env::var("CLIPBOARDWIRE_PASSWORD_FILE").ok(),
+        ) {
+            (Some(_), Some(_)) => {
+                bail!("set exactly one of CLIPBOARDWIRE_PASSWORD or CLIPBOARDWIRE_PASSWORD_FILE")
+            }
+            (Some(p), None) => p,
+            (None, Some(p)) => {
+                let raw = fs::read_to_string(&p).with_context(|| format!("reading {p}"))?;
+                raw.trim_end_matches(['\r', '\n']).to_string()
+            }
+            (None, None) => base.password,
+        };
+        if password.is_empty() {
+            bail!("password must not be empty");
+        }
+        let max_conns = parse_env_usize("CLIPBOARDWIRE_MAX_CONNS")?.unwrap_or(base.max_conns);
+        if max_conns == 0 {
+            bail!("CLIPBOARDWIRE_MAX_CONNS must be at least 1");
+        }
+        let max_frame_bytes =
+            parse_env_usize("CLIPBOARDWIRE_MAX_FRAME")?.unwrap_or(base.max_frame_bytes);
+        if max_frame_bytes == 0 {
+            bail!("CLIPBOARDWIRE_MAX_FRAME must be at least 1");
+        }
+        let cert_env = env::var("CLIPBOARDWIRE_TLS_CERT_FILE")
+            .ok()
+            .map(PathBuf::from);
+        let key_env = env::var("CLIPBOARDWIRE_TLS_KEY_FILE")
+            .ok()
+            .map(PathBuf::from);
+        let (tls_cert_file, tls_key_file) = match (cert_env, key_env) {
+            (None, None) => (base.tls_cert_file, base.tls_key_file),
+            (Some(c), Some(k)) => (Some(c), Some(k)),
+            _ => bail!(
+                "CLIPBOARDWIRE_TLS_CERT_FILE and CLIPBOARDWIRE_TLS_KEY_FILE must be set together \
+                 when overriding TLS via env"
+            ),
+        };
+        let tls_disabled = match env::var("CLIPBOARDWIRE_TLS_DISABLE") {
+            Ok(_) => env_bool("CLIPBOARDWIRE_TLS_DISABLE")?,
+            Err(_) => base.tls_disabled,
+        };
+        let state_dir = env::var("CLIPBOARDWIRE_STATE_DIR")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .or(base.state_dir);
+
+        Ok(Self {
+            bind,
+            user,
+            password,
+            max_conns,
+            max_frame_bytes,
+            tls_cert_file,
+            tls_key_file,
+            tls_disabled,
+            state_dir,
+        })
+    }
+}
+
+fn env_bool(name: &str) -> Result<bool> {
+    match env::var(name) {
+        Ok(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "" | "0" | "false" | "no" | "off" => Ok(false),
+            "1" | "true" | "yes" | "on" => Ok(true),
+            other => bail!("{name}: expected a boolean, got `{other}`"),
+        },
+        Err(_) => Ok(false),
     }
 }
 
