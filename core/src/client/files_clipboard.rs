@@ -292,9 +292,12 @@ mod backend {
             let Some(types) = pasteboard.types() else {
                 return Ok(None);
             };
+            // `types` is NSArray<NSPasteboardType> (a typedef for
+            // NSString). Compare by string content rather than identity.
+            let target = (**NSPasteboardTypeFileURL).to_string();
             let mut has_file_url = false;
             for t in types.iter() {
-                if &*t == &**NSPasteboardTypeFileURL {
+                if t.to_string() == target {
                     has_file_url = true;
                     break;
                 }
