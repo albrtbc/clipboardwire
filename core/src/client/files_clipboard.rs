@@ -292,9 +292,13 @@ mod backend {
             let Some(types) = pasteboard.types() else {
                 return Ok(None);
             };
-            // `types` is NSArray<NSPasteboardType> (a typedef for
-            // NSString). Compare by string content rather than identity.
-            let target = (**NSPasteboardTypeFileURL).to_string();
+            // `types` is NSArray<NSPasteboardType> (= NSString).
+            // NSPasteboardTypeFileURL is `&'static NSPasteboardType`,
+            // so we deref once to reach the NSString and compare via
+            // Rust string contents (NSString implements Display via
+            // a single deref, but two derefs walks past NSString to
+            // NSObject which doesn't implement Display).
+            let target = NSPasteboardTypeFileURL.to_string();
             let mut has_file_url = false;
             for t in types.iter() {
                 if t.to_string() == target {
