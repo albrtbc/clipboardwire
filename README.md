@@ -14,8 +14,24 @@ It started as a Rust rewrite of the [ClipCascade] server (which is Java/Spring),
 but the wire protocol, threat model, and operational shape were redesigned for a
 single-user / personal-use deployment on a LAN or VPN.
 
-<!-- TODO(screenshots): drop a screenshot of the tray menu + settings dialog here
-     and a short GIF of "copy on machine A → tray shows Connected → paste on B" -->
+<table>
+  <tr>
+    <td align="center">
+      <img src="assets/taskbar-menu-screenshot.png" alt="Tray right-click menu: live status, Edit/Reload config, hub Start/Stop/Restart, Quit" width="300"><br/>
+      <sub>Right-click menu: live status, hub controls, quick config access.</sub>
+    </td>
+    <td align="center">
+      <img src="assets/taskbar-icon-screenshot.png" alt="Tray tooltip: clipboardwire — connected, with the server URL" width="300"><br/>
+      <sub>Hover tooltip: current state + the server it's pointed at.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="assets/settings-window-screenshot.png" alt="Settings dialog: Server URL, username, password, poll interval, TLS options, embedded hub section" width="620"><br/>
+      <sub>Settings dialog: a GUI for the config TOML, no editor required.</sub>
+    </td>
+  </tr>
+</table>
 
 [ClipCascade]: https://github.com/Sathvik-Rao/ClipCascade
 
