@@ -1,170 +1,235 @@
 # clipboardwire
 
-A from-scratch Rust clipboard-sync server and desktop client, inspired by the
-[ClipCascade](https://github.com/Sathvik-Rao/ClipCascade) project but redesigned for
-single-user, personal-use deployment on a trusted LAN or VPN. The goal is to replace
-the upstream Spring Boot server (and its always-on JVM) with a small static binary.
-TLS is built in (rustls) — point `clipboardwire serve` at a cert and key and it
-speaks `wss://` directly; no reverse proxy required, though one still works fine
-as a fallback.
+> Cross-platform clipboard sync over WebSocket. One small Rust binary. Runs on Linux + Windows. LAN/VPN-first.
 
-The project ships **one** binary, `clipboardwire`, with three modes selected by
-subcommand:
+[![CI](https://github.com/davefx/clipboardwire/actions/workflows/ci.yml/badge.svg)](https://github.com/davefx/clipboardwire/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/davefx/clipboardwire?sort=semver)](https://github.com/davefx/clipboardwire/releases/latest)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3%2B-blue.svg)](LICENSE)
 
-- **`clipboardwire serve`** — run as a relay hub only (headless / NAS / systemd).
-- **`clipboardwire host`** — run as a hub *and* a local clipboard client on the
-  same machine. Your always-on workstation becomes the network's bootstrap node;
-  no separate server install needed.
-- **`clipboardwire`** (or `clipboardwire connect`) — join an existing hub as a
-  clipboard client. Default mode.
+Copy on one machine, paste on another. Text and images. No cloud account, no
+SaaS, no JVM — just a 7 MiB static binary that runs as a tray icon and shuttles
+clipboard contents between your trusted devices over an encrypted WebSocket.
 
-Distribution is via **native distro packages** — `.deb` for Debian/Ubuntu,
-`.rpm` for Fedora/RHEL/openSUSE, a PKGBUILD for Arch, MSI / Homebrew formula for
-Windows / macOS once those clients exist. No Docker image; the binary is small
-enough to install directly.
+It started as a Rust rewrite of the [ClipCascade] server (which is Java/Spring),
+but the wire protocol, threat model, and operational shape were redesigned for a
+single-user / personal-use deployment on a LAN or VPN.
 
-> Status: **design phase**. No code yet. See `PROTOCOL.md` and `ARCHITECTURE.md`.
+<!-- TODO(screenshots): drop a screenshot of the tray menu + settings dialog here
+     and a short GIF of "copy on machine A → tray shows Connected → paste on B" -->
 
-## Why this exists
+[ClipCascade]: https://github.com/Sathvik-Rao/ClipCascade
 
-The upstream project ships a Java/Spring Boot server. For a personal, single-user
-deployment the JVM's resident memory cost (typically 150–300 MiB) and startup time are
-disproportionate to what the workload actually is: forwarding small clipboard messages
-between a handful of devices. A Rust port targets:
+---
 
-- single statically-linked binary, no runtime to install
-- low idle RSS (target: under 10 MiB)
-- fast cold start (well under a second)
-- same operational shape as the Java server (Docker image + systemd unit)
+## What you get
 
-## Scope
+- **One binary, three modes.** `clipboardwire` (or any of `connect` / `host` /
+  `serve`) — the right mode is the default depending on how you launched it.
+- **System-tray app** with live connection status (Connecting / Connected /
+  Disconnected — retrying in N s), a Settings GUI, and Start/Stop/Restart
+  controls for the embedded hub. The tray exists on Linux (X11 + Wayland via
+  GTK + libayatana-appindicator) and Windows. macOS coming.
+- **Auto-TLS by default.** First time the hub starts it generates a
+  self-signed cert under `~/.config/clipboardwire/` (or the platform
+  equivalent) with sensible SANs and logs the SHA-256 fingerprint. Clients
+  pin it via `tls_ca_file` or skip verification with `tls_insecure = true`
+  on a trusted network.
+- **Embedded-hub mode.** Your always-on workstation can both *be* the
+  relay and a clipboard participant — no separate `serve` install needed.
+- **Native packages.** `.deb`, `.rpm`, and `.msi` on every release. The deb
+  ships a systemd unit (for headless server use) and a `.desktop` entry
+  (so the app shows up in GNOME's Settings → Apps and the launcher).
+- **Tests, not vibes.** Tier-1 smoke tests, Linux DBus-driven menu
+  interaction tests, Windows UI-Automation tray-discovery tests,
+  egui_kittest UI tests for the Settings dialog, an integration test
+  that proves the singleton-lock catches duplicate launches. CI runs all
+  of them on Linux and Windows on every push.
 
-We are **not** trying to be a drop-in replacement for the upstream server. We control
-both server and client code, so the wire protocol is redesigned for simplicity. See
-`PROTOCOL.md` for the spec.
+## Install
 
-### Kept from the original
-
-- WebSocket transport (push, low latency, NAT-friendly).
-- Per-user "last clipboard" cache so a freshly-connected client gets the current value.
-
-### Dropped from the original
-
-| Dropped                              | Why                                                                                                                              |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| STOMP framing                        | No good Rust broker; we control all clients.                                                                                     |
-| Embedded/external ActiveMQ           | Same reason. In-memory fan-out is enough for one user.                                                                           |
-| Separate P2P WebSocket mode          | Single endpoint covers our use case.                                                                                             |
-| Spring Security + JDBC user store    | Single user, hard-coded via env vars.                                                                                            |
-| Signup / login / logout HTML pages   | No browser-facing UI.                                                                                                            |
-| Brute-force throttling + CAPTCHA     | Not exposed to the public internet; LAN or VPN only.                                                                             |
-| Sessions / cookies                   | Each WebSocket carries HTTP Basic credentials.                                                                                   |
-| Donation + system-info endpoints     | Not relevant.                                                                                                                    |
-| Scheduled tasks / system maintenance | Nothing to schedule.                                                                                                             |
-| Client-side AES E2EE                 | Threat model is LAN/VPN; TLS (built-in or via a reverse proxy) covers the wire. Server is in the trust boundary, which keeps the code minimal. |
-
-### TLS
-
-`clipboardwire serve` speaks `wss://` directly when given a cert and key via
-`CLIPBOARDWIRE_TLS_CERT_FILE` / `CLIPBOARDWIRE_TLS_KEY_FILE`. The TLS stack is
-`rustls` (pure Rust, no OpenSSL system dep). If you'd rather front it with a
-reverse proxy (Caddy / nginx / Traefik) for cert management, leave those env
-vars unset and the server will speak plain `ws://`.
-
-**Quick self-signed cert (LAN/VPN only):**
+### Linux (deb)
 
 ```sh
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout key.pem -out cert.pem \
-  -days 3650 -subj '/CN=clipboardwire.lan' \
-  -addext 'subjectAltName=DNS:clipboardwire.lan,IP:192.168.1.10'
+curl -LO https://github.com/davefx/clipboardwire/releases/latest/download/clipboardwire_0.3.2-1_amd64.deb
+sudo apt install ./clipboardwire_0.3.2-1_amd64.deb
+clipboardwire   # opens the tray; first run pops the Settings dialog
 ```
 
-Each client then sets `tls_insecure = true` in its config (because rustls
-refuses to treat a self-signed end-entity cert as both root *and* leaf — the
-standard X.509 way is a CA + a separate server cert).
-
-**Proper PKI (validates without `tls_insecure`):**
+### Linux (rpm)
 
 ```sh
-# Make a tiny CA (do this once)
-openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-  -keyout ca.key -out ca.crt -subj '/CN=clipboardwire-ca'
-
-# Make a server cert and sign it with the CA
-openssl req -new -newkey rsa:2048 -nodes \
-  -keyout server.key -out server.csr \
-  -subj '/CN=clipboardwire.lan' \
-  -addext 'subjectAltName=DNS:clipboardwire.lan,IP:192.168.1.10'
-openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
-  -CAcreateserial -out server.crt -days 3650 \
-  -copy_extensions copyall
+curl -LO https://github.com/davefx/clipboardwire/releases/latest/download/clipboardwire-0.3.2-1.x86_64.rpm
+sudo dnf install ./clipboardwire-0.3.2-1.x86_64.rpm
 ```
 
-Server uses `server.crt` + `server.key`; clients set `tls_ca_file = "ca.crt"`
-and full chain validation works.
+### Windows
 
-## Repository layout
+Download `clipboardwire-0.3.2-x86_64.msi` from the
+[latest release](https://github.com/davefx/clipboardwire/releases/latest)
+and double-click it. The installer creates a Start Menu shortcut, a Desktop
+shortcut, and registers a `HKCU\Run` entry so the tray comes up at login.
 
-```
-clipboardwire/
-├── README.md               # this file
-├── PROTOCOL.md             # wire protocol spec (auth, frames)
-├── ARCHITECTURE.md         # Rust implementation plan
-├── LICENSE                 # GPL-3.0-or-later
-├── Cargo.toml              # workspace manifest
-├── core/                   # clipboardwire-core library (protocol, hub, client)
-│   ├── Cargo.toml
-│   └── src/
-├── cli/                    # clipboardwire binary (serve / host / connect)
-│   ├── Cargo.toml
-│   └── src/
-└── packaging/              # native package recipes (deb, rpm, PKGBUILD, …)
+### Cargo (any platform with Rust 1.89+)
+
+```sh
+cargo install --git https://github.com/davefx/clipboardwire --locked clipboardwire
 ```
 
-## Roadmap
+You'll need the GTK / libayatana-appindicator dev headers on Linux. See
+[Building from source](#building-from-source).
 
-- **Phase 1 — `serve` subcommand.** Hub-only mode: `axum` + `tokio-tungstenite`,
-  single-user Basic auth from env vars, in-memory fan-out, last-clip cache.
-  Ships as a static binary plus `.deb` and `.rpm` packages with a systemd unit.
-- **Phase 2 — `connect` and `host` subcommands on Linux.** Local clipboard
-  polling via `arboard`; `host` runs hub and client in one process so a single
-  workstation can bootstrap the network. Proves the protocol end-to-end.
-- **Phase 3 — Windows build.** Same Rust codebase, cross-built from Linux
-  via `x86_64-pc-windows-gnu`. Produces a 7 MiB stripped `.exe`, plus an
-  `.msi` installer (cargo-wix on the GitHub Windows runner) that installs
-  to `Program Files\clipboardwire\` and prepends the directory to system
-  `PATH`. A Windows system-tray UI ships with the same binary — invoke
-  `clipboardwire connect --tray` to run with a tray icon and a Quit menu.
-  macOS likely falls out for free; Android/iOS out of scope for v0.1.
+## Quick start (one machine hosts, others connect)
 
-  GitHub Actions builds for both platforms on every push and attaches
-  `.deb` / `.rpm` / `.exe` / `.msi` artifacts to tagged releases.
+On the machine that should run the relay:
 
-- **v0.2 — images + cross-platform tray.** Protocol v0.2 carries binary
-  payloads in a new `content_b64` field. The clipboard adapter polls both
-  text and image clipboards; the wire format is PNG inside base64. The
-  tray UI now builds on Linux (libgtk-3 / libayatana-appindicator3) and
-  macOS in addition to Windows. Files sync (clipboard "files" → byte
-  transfer) is deferred to v0.3 because it's effectively a file-transfer
-  feature on top of clipboard sync, not just a wire-format change.
+1. Launch `clipboardwire`. On first run the Settings dialog opens.
+2. Fill in **Server URL** (`wss://<this-host>:8484/sync`), a username, a
+   password.
+3. Expand **Run hub on this machine**, tick **Run hub when the tray starts**,
+   re-enter the same username/password for the hub auth, and choose a bind
+   address (default `0.0.0.0:8484`).
+4. Save. The tray menu now shows **Status: connecting…** then
+   **Status: connected**.
 
-## Threat model (informal)
+On each other device:
 
-- **Trusted:** the user's devices, the server host itself (operator, disk, RAM).
-- **Untrusted:** the network path between devices and the server. TLS
-  (terminated in the server via `rustls`, or by a reverse proxy if you'd
-  rather) is what protects clipboard contents in transit.
-- **Implication:** anyone who can read the server's memory or disk can read
-  clipboard contents while a sync is happening. This is acceptable for a LAN or
-  VPN deployment on hardware the user controls; it is **not** suitable for a
-  server hosted on untrusted infrastructure. If that ever changes, E2EE with
-  TOFU device pairing is the right upgrade path (see `PROTOCOL.md` §4).
-- **Out of scope:** denial-of-service, side channels on the client devices.
+1. Install + launch. Settings dialog opens.
+2. Fill in the same **Server URL** + username + password from above. Leave
+   the hub section unticked.
+3. For the self-signed cert: either copy the host's
+   `~/.config/clipboardwire/self-signed.crt` over to the same path on the
+   client and set `tls_ca_file` in `config.toml`, or — only on a trusted
+   network — tick **Skip TLS verification**.
+4. Save. Tray should show **Status: connected**.
+
+Now copy on one device and paste on another.
+
+## Configuration
+
+The client config lives at:
+
+- Linux: `~/.config/clipboardwire/config.toml`
+- macOS: `~/Library/Application Support/clipboardwire/config.toml`
+- Windows: `%APPDATA%\clipboardwire\config.toml`
+
+The Settings GUI covers every field, but the underlying TOML is small and
+hand-editable:
+
+```toml
+server = "wss://nas.lan:8484/sync"
+user = "alice"
+password = "hunter2"
+poll_ms = 300
+# tls_ca_file = "/path/to/self-signed.crt"  # pin a specific cert
+# tls_insecure = true                       # LAN/VPN only
+
+# Optional: bring up a hub server in this same process. Other devices
+# on your network connect to <bind>; the local client routes over
+# loopback automatically.
+[hub]
+enabled = true
+bind = "0.0.0.0:8484"
+user = "alice"
+password = "hunter2"
+# tls_disabled = true     # serve plain ws:// instead of auto-gen TLS
+```
+
+`clipboardwire serve` reads the same TOML's `[hub]` section, so a
+headless NAS install only needs one file.
+
+## How it works
+
+```
++--------------+         wss://         +--------------+         wss://         +--------------+
+|              | <--------------------> |              | <--------------------> |              |
+|  client A    |   (one TCP conn)       |   the hub    |   (one TCP conn)       |  client B    |
+|  (tray + arb) |  Basic auth + JSON     | (in-memory   |  Basic auth + JSON     |  (tray + arb) |
+|              |                        |  fan-out)    |                        |              |
++--------------+                        +--------------+                        +--------------+
+        ^                                                                              ^
+        |                                                                              |
+   local clipboard                                                              local clipboard
+   (arboard)                                                                    (arboard)
+```
+
+- The **hub** is a [tokio](https://tokio.rs) + [axum](https://github.com/tokio-rs/axum)
+  WebSocket relay. Each connected client gets a UUID; when one client publishes a
+  clip frame, the hub broadcasts to every other client and caches it as the
+  "last clip" so late joiners get the current value in their welcome frame.
+- Each **client** runs a polling thread on top of [arboard](https://github.com/1Password/arboard)
+  to detect local clipboard changes, a tokio WebSocket task for the wire, and a
+  supervisor that bridges them with echo-loop suppression.
+- The **tray** owns the main thread for the OS event loop ([tao](https://github.com/tauri-apps/tao))
+  while tokio runs on worker threads. The Settings dialog is a separate
+  `clipboardwire settings` subprocess that uses [eframe/egui](https://github.com/emilk/egui)
+  so the two event loops don't fight.
+
+The wire protocol is documented in [PROTOCOL.md](PROTOCOL.md). The implementation
+plan and trade-offs are in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Threat model
+
+The α model assumed by the code:
+
+- **Trusted:** your devices, the hub host (operator, RAM, disk).
+- **Untrusted:** the network path between devices and the hub. TLS via
+  `rustls` is what protects clipboard contents in transit. The hub
+  auto-generates a self-signed cert on first run; clients have to either
+  pin it (`tls_ca_file`) or — only on a trusted network — set
+  `tls_insecure = true`.
+- **Out of scope:** denial-of-service, side channels on the client devices,
+  end-to-end encryption from one client to another (the hub sees clipboard
+  plaintext).
+- **Not for:** clipboard sync over the public internet to untrusted
+  infrastructure. The right upgrade path for that is E2EE with TOFU
+  device pairing — see PROTOCOL.md §4 for the sketch.
+
+If you find a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Building from source
+
+You need Rust 1.89 or newer. Linux additionally needs the GTK +
+libayatana-appindicator + libxdo development headers (for the tray icon):
+
+```sh
+# Debian / Ubuntu
+sudo apt install libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+
+# Fedora / RHEL
+sudo dnf install gtk3-devel libayatana-appindicator-gtk3-devel libxdo-devel
+
+# Then:
+cargo build --release -p clipboardwire
+./target/release/clipboardwire
+```
+
+Test suite:
+
+```sh
+cargo test --workspace                                  # unit + integration
+xvfb-run -a cargo test --workspace -- --ignored        # tray + DBus + UIA
+```
+
+## Status & roadmap
+
+Currently shipping: **v0.3.2** — see [CHANGELOG.md](CHANGELOG.md).
+
+Planned for v0.4:
+
+- File transfer (clipboard "files" → byte stream over the same connection)
+- Tray icon overlays (status as a colored dot instead of a menu line)
+- Pin self-signed certs from the Settings GUI
+- macOS native packaging (`.dmg` / Homebrew tap)
+
+## Contributing
+
+Issues and PRs welcome on [GitHub](https://github.com/davefx/clipboardwire).
+The codebase is a workspace: `core/` is the library (protocol, hub, client
+transport, clipboard adapter), `cli/` is the binary (tray, settings, CLI
+plumbing). Tests are the contract — please add one for any non-trivial
+change. Run `cargo fmt --all -- --check` and `cargo clippy --workspace
+--all-targets -- -D warnings` before sending.
 
 ## License
 
-**GPL-3.0-or-later.** A `LICENSE` file with the full GPLv3 text will be added with
-the first code commit. This matches the upstream project's licensing and sidesteps
-any derivative-work ambiguity, since the wire protocol and operational model are
-informed by the upstream design even though no upstream code is copied.
+[GPL-3.0-or-later](LICENSE).
