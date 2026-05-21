@@ -56,7 +56,17 @@ enum UserEvent {
         generation: u64,
         status: ClientStatus,
     },
+    /// The system theme changed (dark ↔ light) since we last looked.
+    /// Triggers an icon rebuild so the mono variant matches the new
+    /// tray background.
+    ThemeChanged(Option<dark_light::Mode>),
 }
+
+/// How often the background task re-checks the system theme. 5 s is
+/// short enough that a manual light/dark toggle feels live, long
+/// enough that the per-poll dark_light::detect() (which reaches DBus
+/// on Linux) doesn't show up in profiles.
+const THEME_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Tray-level handles that need to outlive a Reload event.
 struct State {
@@ -162,6 +172,27 @@ pub fn run(
         let _ = menu_proxy.send_event(UserEvent::Menu(event));
     }));
 
+    // Background task that re-detects the system theme every
+    // THEME_POLL_INTERVAL and posts a UserEvent if it changed since
+    // the last check. dark_light has no subscription API so polling
+    // is the cross-platform option; the detect() call is cheap
+    // (~ms) and only fires the event when the value actually flips,
+    // so the cost is negligible.
+    let theme_proxy = proxy.clone();
+    runtime.handle().spawn(async move {
+        let mut last = dark_light::detect().ok();
+        let mut tick = tokio::time::interval(THEME_POLL_INTERVAL);
+        tick.tick().await; // skip the immediate first tick
+        loop {
+            tick.tick().await;
+            let now = dark_light::detect().ok();
+            if now != last {
+                last = now;
+                let _ = theme_proxy.send_event(UserEvent::ThemeChanged(now));
+            }
+        }
+    });
+
     let mut state = State {
         supervisor: None,
         supervisor_gen: 0,
@@ -194,6 +225,7 @@ pub fn run(
     // Keep the host-mode hub task alive for the lifetime of the loop.
     let _host_hub_handle = host_hub_handle;
 
+    let mut theme = theme;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -272,6 +304,11 @@ pub fn run(
                 state.embedded_hub = None;
                 warn!(gen = generation, summary, "embedded hub exited on its own");
                 update_hub_menu(&state, &start_hub_item, &stop_hub_item, &restart_hub_item);
+            }
+            Event::UserEvent(UserEvent::ThemeChanged(new_theme)) => {
+                info!(?new_theme, "system theme changed; refreshing tray icon");
+                theme = new_theme;
+                refresh_icon(&tray, theme, &state);
             }
             Event::UserEvent(UserEvent::ClientStatusChanged { generation, status })
                 if generation == state.supervisor_gen =>

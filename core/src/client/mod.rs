@@ -56,7 +56,33 @@ pub async fn run_supervisor(mut clipboard: Clipboard, mut transport: Transport) 
             None
         }
     };
+
+    // Receiver-side multi-file batching. When the sender does a single
+    // Ctrl+C of N files, the chunks arrive interleaved and each file
+    // completes at a different moment. Without grouping, the OS
+    // clipboard would only ever hold the *last* finished file.
+    //
+    // Strategy: accumulate completed paths in `pending_files`, set a
+    // deadline `RECEIVE_BATCH_WINDOW` after each completion, and only
+    // apply when the deadline expires without another arrival. The
+    // window is wide enough to ride out the inter-file gap in a
+    // multi-file send (typically a few ms) but short enough that the
+    // user doesn't notice a "single file" copy as laggy.
+    let mut pending_files: Vec<std::path::PathBuf> = Vec::new();
+    let mut pending_deadline: Option<tokio::time::Instant> = None;
+
     loop {
+        // Snapshot for the async closure to avoid borrowing
+        // pending_deadline — the closure pins through the select
+        // and would otherwise block mutation in the arms below.
+        let current_deadline = pending_deadline;
+        let deadline_fut = async move {
+            match current_deadline {
+                Some(d) => tokio::time::sleep_until(d).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(deadline_fut);
         tokio::select! {
             local = clipboard.events_rx.recv() => {
                 let Some(change) = local else {
@@ -131,20 +157,14 @@ pub async fn run_supervisor(mut clipboard: Clipboard, mut transport: Transport) 
                     match receiver.receive_chunk(chunk) {
                         Ok(Some(path)) => {
                             tracing::info!(file = %path.display(), "saved received file");
-                            // Push the assembled file into the local
-                            // OS clipboard so a Ctrl+V in the user's
-                            // file manager pastes it. Each file
-                            // arrives as its own clipboard set — a
-                            // multi-file sender produces multiple
-                            // such events; only the last is kept by
-                            // the OS clipboard (a known limitation
-                            // we'll batch up in a later release).
-                            if let Err(e) = clipboard.apply_tx.send(ClipChange::Files(vec![path])) {
-                                warn!(
-                                    error = %e,
-                                    "clipboard thread gone; can't expose received file in clipboard"
-                                );
-                            }
+                            // Stash for the batch window; the deadline
+                            // arm below will apply the whole list at
+                            // once when no further file completes for
+                            // RECEIVE_BATCH_WINDOW.
+                            pending_files.push(path);
+                            pending_deadline = Some(
+                                tokio::time::Instant::now() + RECEIVE_BATCH_WINDOW,
+                            );
                         }
                         Ok(None) => {}
                         Err(e) => {
@@ -153,10 +173,32 @@ pub async fn run_supervisor(mut clipboard: Clipboard, mut transport: Transport) 
                     }
                 }
             }
+            _ = &mut deadline_fut, if pending_deadline.is_some() => {
+                pending_deadline = None;
+                if !pending_files.is_empty() {
+                    let batch = std::mem::take(&mut pending_files);
+                    tracing::info!(
+                        count = batch.len(),
+                        "applying received-files batch to local clipboard"
+                    );
+                    if let Err(e) = clipboard.apply_tx.send(ClipChange::Files(batch)) {
+                        warn!(
+                            error = %e,
+                            "clipboard thread gone; can't expose received files in clipboard"
+                        );
+                    }
+                }
+            }
             else => return,
         }
     }
 }
+
+/// How long to wait for additional file completions before applying
+/// the batch to the local clipboard. Tuned to be invisible to a
+/// single-file `Ctrl+C` (~paste latency) while reliably collapsing a
+/// multi-file `Ctrl+C` into one clipboard set even on slow networks.
+const RECEIVE_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// `tokio::select!` wants every arm to be a future. When the supervisor
 /// is configured *without* inbound files (the headless `send`

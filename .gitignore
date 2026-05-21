@@ -7,3 +7,13 @@ Cargo.lock.bak
 *~
 .idea/
 .vscode/
+
+# Distribution artifacts we sometimes download into the repo root
+# while computing SHA-256s for the Homebrew cask — they don't
+# belong in version control.
+/clipboardwire-*
+/*.deb
+/*.rpm
+/*.dmg
+/*.msi
+/*.exe
