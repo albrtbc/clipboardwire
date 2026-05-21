@@ -6,27 +6,55 @@ name: Bump Homebrew cask
 # uploads the .dmg first; this one then reads the new URL + SHA-256.
 
 on:
-  release:
-    types: [published]
+  # GitHub silently drops `release: published` events when the release
+  # is created by GITHUB_TOKEN (anti-loop guard), so chain off the
+  # Release workflow finishing instead. Allow manual re-runs too.
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to bump the cask to (e.g. v0.4.0). Defaults to the latest."
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   bump:
+    # `workflow_run` fires on ALL outcomes; only proceed if the
+    # Release we're chaining off actually succeeded.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     steps:
       - name: Compute new version + SHA-256
         id: vars
         run: |
           set -euo pipefail
-          # tag → 0.X.Y (strip leading 'v')
-          VERSION="${GITHUB_REF_NAME#v}"
+          # Three sources of the tag, by precedence:
+          # 1) explicit input from workflow_dispatch
+          # 2) the head_branch of the triggering workflow_run (a tag
+          #    push has this set to the tag name, e.g. "v0.4.0")
+          # 3) gh CLI fallback to the latest release
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${{ github.event.workflow_run.head_branch }}"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "main" ]; then
+            TAG=$(gh release view --json tagName --jq .tagName --repo davefx/clipboardwire)
+          fi
+          VERSION="${TAG#v}"
           DMG_URL="https://github.com/davefx/clipboardwire/releases/download/v${VERSION}/clipboardwire-macos-universal.dmg"
           curl -sL -o /tmp/clipboardwire.dmg "$DMG_URL"
           SHA256=$(sha256sum /tmp/clipboardwire.dmg | awk '{print $1}')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA256"   >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Check out the tap repo
         uses: actions/checkout@v4
