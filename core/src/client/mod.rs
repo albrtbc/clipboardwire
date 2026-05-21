@@ -5,6 +5,7 @@
 
 pub mod clipboard;
 pub mod config;
+pub mod file;
 pub mod tls;
 pub mod transport;
 
@@ -44,6 +45,16 @@ pub async fn run_with_status(
 /// tests, which inject test-controlled [`Clipboard`] and [`Transport`] handles
 /// without spawning the real arboard thread or hitting the network.
 pub async fn run_supervisor(mut clipboard: Clipboard, mut transport: Transport) {
+    let mut file_receiver = match file::FileReceiver::new() {
+        Ok(r) => Some(r),
+        Err(e) => {
+            warn!(
+                error = %format!("{e:#}"),
+                "could not initialise the file-transfer receiver; inbound files will be dropped"
+            );
+            None
+        }
+    };
     loop {
         tokio::select! {
             local = clipboard.events_rx.recv() => {
@@ -86,8 +97,40 @@ pub async fn run_supervisor(mut clipboard: Clipboard, mut transport: Transport) 
                     return;
                 }
             }
+            file_chunk = recv_maybe(transport.inbound_files_rx.as_mut()) => {
+                let Some(chunk) = file_chunk else {
+                    // No inbound-files channel wired, or it closed.
+                    // Either way, this branch just goes quiet — the
+                    // other arms keep the loop alive.
+                    continue;
+                };
+                if let Some(receiver) = file_receiver.as_mut() {
+                    match receiver.receive_chunk(chunk) {
+                        Ok(Some(path)) => {
+                            tracing::info!(file = %path.display(), "saved received file");
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            warn!(error = %format!("{e:#}"), "file chunk rejected");
+                        }
+                    }
+                }
+            }
             else => return,
         }
+    }
+}
+
+/// `tokio::select!` wants every arm to be a future. When the supervisor
+/// is configured *without* inbound files (the headless `send`
+/// subprocess), we still want `select!` to compile cleanly — return a
+/// future that just yields `None` from a never-resolving recv if the
+/// channel is absent. Equivalent to `std::future::pending()` but with
+/// the same return type as the receiver.
+async fn recv_maybe<T>(rx: Option<&mut tokio::sync::mpsc::Receiver<T>>) -> Option<T> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
     }
 }
 

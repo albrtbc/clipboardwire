@@ -7,6 +7,17 @@ follows [Semantic Versioning](https://semver.org).
 ## [Unreleased] — v0.4.0 in progress
 
 ### Added
+- **File transfer (PROTOCOL v0.3.0).** New `file_chunk` frame type
+  carries 4 MiB pieces of a single file; the receiver assembles them
+  into a temp file, verifies the SHA-256 carried in every chunk, and
+  moves the finished file into `~/Downloads/clipboardwire/`. Wire-
+  format only for v0.4 — OS clipboard integration (drag files from
+  Explorer/Finder/Nautilus) follows in a later release.
+- **`clipboardwire send <FILE>` subcommand.** One-shot: opens a fresh
+  connection to the configured hub, publishes the file in chunks,
+  exits. Receivers running with the tray (or any client whose
+  supervisor is live) save the file under their configured downloads
+  dir automatically.
 - **Tray icon status overlay.** Colored dot in the bottom-right of the
   tray icon mirrors the menu's `Status: …` line — green = connected,
   amber = connecting, red = disconnected / hub-bind failure, none =

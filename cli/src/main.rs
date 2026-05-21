@@ -47,6 +47,14 @@ enum Command {
     Connect,
     /// Open the GUI settings dialog for the client config file.
     Settings,
+    /// Send a file through the configured hub to every other connected
+    /// peer. One-shot: opens a fresh connection, publishes the file in
+    /// 4-MiB chunks, then exits. The receivers' tray supervisors save
+    /// each file under their `~/Downloads/clipboardwire/`.
+    Send {
+        /// Path to the file to send.
+        file: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -126,7 +134,45 @@ async fn run_headless(cli: Cli, cmd: Command) -> Result<()> {
         }
         Command::Host => run_host_headless(cli.config.as_deref()).await,
         Command::Settings => unreachable!("settings handled before runtime build"),
+        Command::Send { file } => run_send_once(cli.config.as_deref(), &file).await,
     }
+}
+
+/// `clipboardwire send <file>` — one-shot connect, publish the file as
+/// a sequence of `file_chunk` frames, exit. Reuses the client config
+/// (server URL + creds + TLS settings) the user already has.
+async fn run_send_once(
+    config_path: Option<&std::path::Path>,
+    file: &std::path::Path,
+) -> Result<()> {
+    use clipboardwire_core::client::transport::{spawn_with_options, SpawnOptions};
+
+    let cfg = load_client_config_or_bail(config_path)?;
+    let (transport, join) = spawn_with_options(
+        cfg,
+        SpawnOptions {
+            status_tx: None,
+            receive_files: false,
+            one_shot: true,
+        },
+    );
+
+    let send_result =
+        clipboardwire_core::client::file::send_file_through(file, &transport.outbound_files_tx)
+            .await;
+
+    // Drop the senders so the transport's run_loop sees the channels
+    // close and exits cleanly (one_shot=true skips the reconnect retry).
+    // The receiver-side channels go too, which closes the inbound side
+    // and lets the WebSocket peer's read loop see a clean stream end.
+    let _ = transport.outbound_tx;
+    let _ = transport.outbound_files_tx;
+    drop(transport.inbound_rx);
+    drop(transport.inbound_files_rx);
+    // Wait for the spawned task to finish flushing chunks to the wire.
+    join.await.context("transport task panicked")?;
+
+    send_result
 }
 
 /// Pick the directory the singleton-lock file lives in. We co-locate
@@ -313,7 +359,9 @@ fn run_with_tray(runtime: tokio::runtime::Runtime, cli: Cli, cmd: Command) -> Re
             let (path, cfg, hub) = prepare_host_tray_args(&runtime, cli.config.as_deref())?;
             (path, Some(cfg), Some(hub), false)
         }
-        Command::Serve | Command::Settings => unreachable!("non-tray subcommand"),
+        Command::Serve | Command::Settings | Command::Send { .. } => {
+            unreachable!("non-tray subcommand")
+        }
     };
 
     tray::run(

@@ -29,11 +29,13 @@ use tokio::time::interval;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::protocol::{ClipFrame, ErrorCode, ErrorFrame, Frame, WelcomeFrame, PROTOCOL_VERSION};
+use crate::protocol::{
+    ClipFrame, ErrorCode, ErrorFrame, FileChunkFrame, Frame, WelcomeFrame, PROTOCOL_VERSION,
+};
 
 use super::auth::check_basic_auth;
 use super::config::ServerConfig;
-use super::hub::{HubHandle, RegisterResult, PER_CLIENT_CHANNEL_BUF};
+use super::hub::{HubHandle, RegisterResult, PER_CLIENT_CHANNEL_BUF, PER_CLIENT_FILE_CHANNEL_BUF};
 
 /// Application state passed to every request handler.
 #[derive(Clone)]
@@ -98,9 +100,10 @@ async fn handle_socket(
     info!("connection opened");
 
     let (clip_tx, mut clip_rx) = mpsc::channel::<ClipFrame>(PER_CLIENT_CHANNEL_BUF);
+    let (file_tx, mut file_rx) = mpsc::channel::<FileChunkFrame>(PER_CLIENT_FILE_CHANNEL_BUF);
     let (internal_tx, mut internal_rx) = mpsc::channel::<Frame>(8);
 
-    let registration = state.hub.register(client_id, clip_tx).await;
+    let registration = state.hub.register(client_id, clip_tx, file_tx).await;
     let last_clip = match registration {
         Ok(RegisterResult::Accepted { last_clip }) => last_clip,
         Ok(RegisterResult::AtCapacity) | Err(_) => {
@@ -166,6 +169,17 @@ async fn handle_socket(
                     }
                 }
 
+                maybe_file = file_rx.recv() => {
+                    let Some(chunk) = maybe_file else { break };
+                    let json = match serde_json::to_string(&Frame::FileChunk(chunk)) {
+                        Ok(s) => s,
+                        Err(e) => { error!(error = %e, "serializing file_chunk"); continue }
+                    };
+                    if sink.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+
                 _ = ping_timer.tick() => {
                     if sink.send(Message::Ping(Default::default())).await.is_err() {
                         break;
@@ -223,6 +237,22 @@ async fn handle_socket(
                         // forwarding.
                         clip.from = None;
                         if reader_hub.publish(client_id, clip).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Frame::FileChunk(mut chunk)) => {
+                        if let Err(reason) = chunk.validate() {
+                            debug!(reason, "rejecting bad file_chunk");
+                            let _ = reader_internal_tx
+                                .send(Frame::Error(ErrorFrame {
+                                    code: ErrorCode::BadFrame,
+                                    message: reason.into(),
+                                }))
+                                .await;
+                            break;
+                        }
+                        chunk.from = None;
+                        if reader_hub.publish_file(client_id, chunk).await.is_err() {
                             break;
                         }
                     }

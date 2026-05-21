@@ -18,10 +18,14 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::protocol::ClipFrame;
+use crate::protocol::{ClipFrame, FileChunkFrame};
 
-/// Capacity of each per-client outbound mpsc.
+/// Capacity of each per-client outbound clip mpsc.
 pub const PER_CLIENT_CHANNEL_BUF: usize = 32;
+/// Capacity of each per-client outbound file-chunk mpsc. Smaller than
+/// the clip channel because chunks are megabyte-sized and a slow
+/// receiver shouldn't be allowed to balloon process memory.
+pub const PER_CLIENT_FILE_CHANNEL_BUF: usize = 4;
 
 /// Capacity of the hub's own inbox. Held by every connection task plus the
 /// supervisor; sized generously since the hub drains synchronously.
@@ -32,6 +36,7 @@ pub enum HubMessage {
     Register {
         id: Uuid,
         outbound: mpsc::Sender<ClipFrame>,
+        file_outbound: mpsc::Sender<FileChunkFrame>,
         ack: oneshot::Sender<RegisterResult>,
     },
     Deregister {
@@ -40,6 +45,12 @@ pub enum HubMessage {
     Publish {
         from: Uuid,
         clip: ClipFrame,
+    },
+    /// Fan-out a file-chunk frame to every other connected client. Not
+    /// cached for late joiners (unlike text/image clips).
+    PublishFile {
+        from: Uuid,
+        chunk: FileChunkFrame,
     },
 }
 
@@ -62,12 +73,14 @@ impl HubHandle {
         &self,
         id: Uuid,
         outbound: mpsc::Sender<ClipFrame>,
+        file_outbound: mpsc::Sender<FileChunkFrame>,
     ) -> anyhow::Result<RegisterResult> {
         let (ack_tx, ack_rx) = oneshot::channel();
         self.tx
             .send(HubMessage::Register {
                 id,
                 outbound,
+                file_outbound,
                 ack: ack_tx,
             })
             .await
@@ -75,6 +88,17 @@ impl HubHandle {
         ack_rx
             .await
             .map_err(|_| anyhow::anyhow!("hub dropped registration ack"))
+    }
+
+    /// Publish a file chunk for fan-out. The hub stamps `chunk.from =
+    /// Some(from)` and relays to every other connected peer; no
+    /// caching, so late joiners don't auto-receive a half-finished
+    /// transfer from before they connected.
+    pub async fn publish_file(&self, from: Uuid, chunk: FileChunkFrame) -> anyhow::Result<()> {
+        self.tx
+            .send(HubMessage::PublishFile { from, chunk })
+            .await
+            .map_err(|_| anyhow::anyhow!("hub task is gone"))
     }
 
     /// Best-effort deregistration; ignores send failure because if the hub
@@ -93,8 +117,15 @@ impl HubHandle {
     }
 }
 
+/// Per-client fan-out channels. Paired so we can deliver both
+/// `clip` and `file_chunk` traffic to the same peer connection.
+struct ClientChannels {
+    clip: mpsc::Sender<ClipFrame>,
+    file: mpsc::Sender<FileChunkFrame>,
+}
+
 pub(crate) struct Hub {
-    clients: HashMap<Uuid, mpsc::Sender<ClipFrame>>,
+    clients: HashMap<Uuid, ClientChannels>,
     last_clip: Option<ClipFrame>,
     max_clients: usize,
 }
@@ -119,13 +150,24 @@ impl Hub {
 
     pub(crate) fn handle(&mut self, msg: HubMessage) {
         match msg {
-            HubMessage::Register { id, outbound, ack } => {
+            HubMessage::Register {
+                id,
+                outbound,
+                file_outbound,
+                ack,
+            } => {
                 if self.clients.len() >= self.max_clients {
                     warn!(client = %id, "rejecting registration: at capacity");
                     let _ = ack.send(RegisterResult::AtCapacity);
                     return;
                 }
-                self.clients.insert(id, outbound);
+                self.clients.insert(
+                    id,
+                    ClientChannels {
+                        clip: outbound,
+                        file: file_outbound,
+                    },
+                );
                 let snapshot = self.last_clip.clone();
                 debug!(client = %id, total = self.clients.len(), "registered");
                 let _ = ack.send(RegisterResult::Accepted {
@@ -141,21 +183,46 @@ impl Hub {
                 clip.from = Some(from);
                 self.last_clip = Some(clip.clone());
 
-                for (peer_id, tx) in self.clients.iter() {
+                for (peer_id, channels) in self.clients.iter() {
                     if *peer_id == from {
                         continue;
                     }
-                    match tx.try_send(clip.clone()) {
+                    match channels.clip.try_send(clip.clone()) {
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
-                            warn!(client = %peer_id, "outbound buffer full; dropping frame");
+                            warn!(client = %peer_id, "outbound clip buffer full; dropping frame");
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             // Peer's task already exited; deregistration is
-                            // either in flight or will happen shortly. We
-                            // *could* eagerly remove from the map here, but
-                            // that would mean mutating during iteration.
+                            // either in flight or will happen shortly.
                         }
+                    }
+                }
+            }
+            HubMessage::PublishFile { from, mut chunk } => {
+                chunk.from = Some(from);
+                for (peer_id, channels) in self.clients.iter() {
+                    if *peer_id == from {
+                        continue;
+                    }
+                    match channels.file.try_send(chunk.clone()) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            // File transfers tolerate a missed chunk
+                            // poorly (the assembled file would be
+                            // corrupt). We could close the peer here;
+                            // for v0.4 first cut we just drop and log.
+                            // TODO: surface to receiver as a transfer
+                            // abort marker.
+                            warn!(
+                                client = %peer_id,
+                                file = %chunk.name,
+                                index = chunk.chunk_index,
+                                "outbound file buffer full; dropping chunk \
+                                 (receiver's transfer will be incomplete)"
+                            );
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {}
                     }
                 }
             }
@@ -179,6 +246,13 @@ mod tests {
     use super::*;
     use crate::protocol::TEXT_CONTENT_TYPE;
 
+    /// Tests in this module use the hub's clip channel; the file channel
+    /// just has to exist (the hub `Drop`s the sender on deregister).
+    fn dummy_file_tx() -> mpsc::Sender<FileChunkFrame> {
+        let (tx, _rx) = mpsc::channel(1);
+        tx
+    }
+
     fn dummy_clip(content: &str) -> ClipFrame {
         ClipFrame {
             id: Uuid::new_v4(),
@@ -197,13 +271,13 @@ mod tests {
         let id_a = Uuid::new_v4();
         let (tx_a, mut rx_a) = mpsc::channel(8);
         assert!(matches!(
-            hub.register(id_a, tx_a).await.unwrap(),
+            hub.register(id_a, tx_a, dummy_file_tx()).await.unwrap(),
             RegisterResult::Accepted { last_clip: None }
         ));
 
         let id_b = Uuid::new_v4();
         let (tx_b, mut rx_b) = mpsc::channel(8);
-        hub.register(id_b, tx_b).await.unwrap();
+        hub.register(id_b, tx_b, dummy_file_tx()).await.unwrap();
 
         hub.publish(id_a, dummy_clip("hello")).await.unwrap();
 
@@ -225,7 +299,7 @@ mod tests {
 
         let id_a = Uuid::new_v4();
         let (tx_a, _rx_a) = mpsc::channel(8);
-        hub.register(id_a, tx_a).await.unwrap();
+        hub.register(id_a, tx_a, dummy_file_tx()).await.unwrap();
         hub.publish(id_a, dummy_clip("cached")).await.unwrap();
 
         // Give the hub a tick to apply the publish.
@@ -233,7 +307,7 @@ mod tests {
 
         let id_b = Uuid::new_v4();
         let (tx_b, _rx_b) = mpsc::channel(8);
-        let result = hub.register(id_b, tx_b).await.unwrap();
+        let result = hub.register(id_b, tx_b, dummy_file_tx()).await.unwrap();
         match result {
             RegisterResult::Accepted { last_clip } => {
                 let clip = last_clip.expect("late joiner should see the cached clip");
@@ -251,13 +325,18 @@ mod tests {
         for _ in 0..2 {
             let (tx, _rx) = mpsc::channel(8);
             assert!(matches!(
-                hub.register(Uuid::new_v4(), tx).await.unwrap(),
+                hub.register(Uuid::new_v4(), tx, dummy_file_tx())
+                    .await
+                    .unwrap(),
                 RegisterResult::Accepted { .. }
             ));
         }
 
         let (tx, _rx) = mpsc::channel(8);
-        let third = hub.register(Uuid::new_v4(), tx).await.unwrap();
+        let third = hub
+            .register(Uuid::new_v4(), tx, dummy_file_tx())
+            .await
+            .unwrap();
         assert!(matches!(third, RegisterResult::AtCapacity));
     }
 
@@ -267,12 +346,14 @@ mod tests {
 
         let id_a = Uuid::new_v4();
         let (tx_a, _rx_a) = mpsc::channel(8);
-        hub.register(id_a, tx_a).await.unwrap();
+        hub.register(id_a, tx_a, dummy_file_tx()).await.unwrap();
 
         // Second registration is rejected.
         let (tx_b, _rx_b) = mpsc::channel(8);
         assert!(matches!(
-            hub.register(Uuid::new_v4(), tx_b).await.unwrap(),
+            hub.register(Uuid::new_v4(), tx_b, dummy_file_tx())
+                .await
+                .unwrap(),
             RegisterResult::AtCapacity
         ));
 
@@ -282,7 +363,9 @@ mod tests {
         // Now there is room again.
         let (tx_c, _rx_c) = mpsc::channel(8);
         assert!(matches!(
-            hub.register(Uuid::new_v4(), tx_c).await.unwrap(),
+            hub.register(Uuid::new_v4(), tx_c, dummy_file_tx())
+                .await
+                .unwrap(),
             RegisterResult::Accepted { .. }
         ));
     }
@@ -295,16 +378,16 @@ mod tests {
         // immediately with Full — but that must not affect deliveries to B.
         let id_a = Uuid::new_v4();
         let (tx_a, _rx_a) = mpsc::channel(1);
-        hub.register(id_a, tx_a).await.unwrap();
+        hub.register(id_a, tx_a, dummy_file_tx()).await.unwrap();
 
         // Fill A's buffer by sending from someone else first.
         let id_pub = Uuid::new_v4();
         let (tx_pub, _rx_pub) = mpsc::channel(8);
-        hub.register(id_pub, tx_pub).await.unwrap();
+        hub.register(id_pub, tx_pub, dummy_file_tx()).await.unwrap();
 
         let id_b = Uuid::new_v4();
         let (tx_b, mut rx_b) = mpsc::channel(8);
-        hub.register(id_b, tx_b).await.unwrap();
+        hub.register(id_b, tx_b, dummy_file_tx()).await.unwrap();
 
         // First publish fills A's slot (capacity 1).
         hub.publish(id_pub, dummy_clip("first")).await.unwrap();
@@ -324,7 +407,7 @@ mod tests {
 
         let id_a = Uuid::new_v4();
         let (tx_a, _rx_a) = mpsc::channel(8);
-        hub.register(id_a, tx_a).await.unwrap();
+        hub.register(id_a, tx_a, dummy_file_tx()).await.unwrap();
 
         let mut clip = dummy_clip("x");
         clip.from = None;
@@ -333,7 +416,7 @@ mod tests {
 
         let id_b = Uuid::new_v4();
         let (tx_b, _rx_b) = mpsc::channel(8);
-        let r = hub.register(id_b, tx_b).await.unwrap();
+        let r = hub.register(id_b, tx_b, dummy_file_tx()).await.unwrap();
         if let RegisterResult::Accepted {
             last_clip: Some(cached),
         } = r

@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, instrument, trace, warn};
 
-use crate::protocol::{ClipFrame, Frame};
+use crate::protocol::{ClipFrame, FileChunkFrame, Frame};
 use crate::server::auth::basic_header_value;
 
 use super::config::ClientConfig;
@@ -33,6 +33,11 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 const RESET_AFTER_STABLE: Duration = Duration::from_secs(30);
 const INBOUND_BUF: usize = 32;
 const OUTBOUND_BUF: usize = 8;
+/// File chunks are bigger than clips and naturally back-pressured by
+/// the network; keep the queues short so we don't accidentally buffer
+/// hundreds of MB in process memory while waiting for the socket.
+const INBOUND_FILES_BUF: usize = 4;
+const OUTBOUND_FILES_BUF: usize = 4;
 
 /// Connection-state snapshot the transport emits via the optional
 /// `status_tx` watch channel passed to [`spawn_with_status`]. The tray
@@ -54,14 +59,38 @@ pub struct Transport {
     /// Inbound `clip` frames from the hub (other peers' publishes plus, on
     /// each new connection, the cached `last_clip` from the welcome).
     pub inbound_rx: mpsc::Receiver<ClipFrame>,
+    /// Inbound `file_chunk` frames from other peers. Only carries traffic
+    /// when the supervisor opted in by passing a sender; the headless
+    /// `send` subcommand sets this to `None`.
+    pub inbound_files_rx: Option<mpsc::Receiver<FileChunkFrame>>,
     /// Outbound `clip` frames to push to the hub.
     pub outbound_tx: mpsc::Sender<ClipFrame>,
+    /// Outbound `file_chunk` frames to push to the hub.
+    pub outbound_files_tx: mpsc::Sender<FileChunkFrame>,
+}
+
+/// Configuration for [`spawn_with_options`]. Optional flags layered on
+/// top of the bare [`spawn`] call so the supervisor + a one-shot `send`
+/// subprocess can share the same transport code without each having
+/// fields the other doesn't need.
+#[derive(Default)]
+pub struct SpawnOptions {
+    pub status_tx: Option<watch::Sender<ClientStatus>>,
+    /// If true, the transport pipes inbound file chunks through a new
+    /// channel surfaced on the returned [`Transport`]. False for
+    /// senders that don't want to receive.
+    pub receive_files: bool,
+    /// If true, the transport exits cleanly after a single
+    /// connect-and-serve cycle (clean close OR error). Used by the
+    /// one-shot `clipboardwire send` subcommand which doesn't want
+    /// the supervisor's reconnect-forever behavior.
+    pub one_shot: bool,
 }
 
 /// Spawn the transport task. Returns the supervisor-facing handle and a join
 /// handle for orderly shutdown (abort it to disconnect cleanly).
 pub fn spawn(config: ClientConfig) -> (Transport, JoinHandle<()>) {
-    spawn_with_status(config, None)
+    spawn_with_options(config, SpawnOptions::default())
 }
 
 /// Like [`spawn`] but additionally accepts a `watch::Sender` that the
@@ -71,15 +100,56 @@ pub fn spawn_with_status(
     config: ClientConfig,
     status_tx: Option<watch::Sender<ClientStatus>>,
 ) -> (Transport, JoinHandle<()>) {
+    spawn_with_options(
+        config,
+        SpawnOptions {
+            status_tx,
+            receive_files: true,
+            one_shot: false,
+        },
+    )
+}
+
+/// Full-control spawn. Used by the supervisor (wants status + files)
+/// and by the `send` subprocess (one-shot, no status, no inbound file
+/// stream — it just publishes).
+pub fn spawn_with_options(
+    config: ClientConfig,
+    options: SpawnOptions,
+) -> (Transport, JoinHandle<()>) {
     let (inbound_tx, inbound_rx) = mpsc::channel::<ClipFrame>(INBOUND_BUF);
     let (outbound_tx, outbound_rx) = mpsc::channel::<ClipFrame>(OUTBOUND_BUF);
+    let (outbound_files_tx, outbound_files_rx) =
+        mpsc::channel::<FileChunkFrame>(OUTBOUND_FILES_BUF);
+    let (inbound_files_tx, inbound_files_rx) = if options.receive_files {
+        let (tx, rx) = mpsc::channel::<FileChunkFrame>(INBOUND_FILES_BUF);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let SpawnOptions {
+        status_tx,
+        one_shot,
+        ..
+    } = options;
     let join = tokio::spawn(async move {
-        run_loop(config, inbound_tx, outbound_rx, status_tx).await;
+        run_loop(
+            config,
+            inbound_tx,
+            inbound_files_tx,
+            outbound_rx,
+            outbound_files_rx,
+            status_tx,
+            one_shot,
+        )
+        .await;
     });
     (
         Transport {
             inbound_rx,
+            inbound_files_rx,
             outbound_tx,
+            outbound_files_tx,
         },
         join,
     )
@@ -89,8 +159,11 @@ pub fn spawn_with_status(
 async fn run_loop(
     config: ClientConfig,
     inbound_tx: mpsc::Sender<ClipFrame>,
+    inbound_files_tx: Option<mpsc::Sender<FileChunkFrame>>,
     mut outbound_rx: mpsc::Receiver<ClipFrame>,
+    mut outbound_files_rx: mpsc::Receiver<FileChunkFrame>,
     status_tx: Option<watch::Sender<ClientStatus>>,
+    one_shot: bool,
 ) {
     let emit = |s: ClientStatus| {
         if let Some(tx) = status_tx.as_ref() {
@@ -103,9 +176,23 @@ async fn run_loop(
     loop {
         emit(ClientStatus::Connecting);
         let attempt_start = Instant::now();
-        match connect_and_serve(&config, &inbound_tx, &mut outbound_rx, status_tx.as_ref()).await {
+        let outcome = connect_and_serve(
+            &config,
+            &inbound_tx,
+            inbound_files_tx.as_ref(),
+            &mut outbound_rx,
+            &mut outbound_files_rx,
+            status_tx.as_ref(),
+        )
+        .await;
+        match &outcome {
             Ok(()) => debug!("connection ended cleanly"),
             Err(e) => warn!(error = %format!("{e:#}"), "connection error"),
+        }
+        if one_shot {
+            // The `clipboardwire send` path: a single connect+publish+
+            // close cycle is the whole job. Don't reconnect.
+            return;
         }
         // If we held the connection for a while, the backoff resets.
         if attempt_start.elapsed() >= RESET_AFTER_STABLE {
@@ -120,10 +207,35 @@ async fn run_loop(
     }
 }
 
+/// Drain any file chunks still buffered in `outbound_files_rx` to the
+/// WebSocket sink. Called when the outbound clip channel closes (the
+/// caller is winding down) and we want to make sure we don't drop a
+/// queued file mid-flight just because `select!` happened to fire the
+/// clip-empty arm first. `recv()` here returns `Some` for queued
+/// items, then `None` when the file channel is also closed.
+async fn drain_outbound_files<S>(
+    outbound_files_rx: &mut mpsc::Receiver<FileChunkFrame>,
+    sink: &mut S,
+) -> Result<()>
+where
+    S: futures_util::sink::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    while let Some(chunk) = outbound_files_rx.recv().await {
+        let json = serde_json::to_string(&Frame::FileChunk(chunk))?;
+        if let Err(e) = sink.send(Message::Text(json.into())).await {
+            warn!(error = %e, "drain: file_chunk send failed");
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
 async fn connect_and_serve(
     config: &ClientConfig,
     inbound_tx: &mpsc::Sender<ClipFrame>,
+    inbound_files_tx: Option<&mpsc::Sender<FileChunkFrame>>,
     outbound_rx: &mut mpsc::Receiver<ClipFrame>,
+    outbound_files_rx: &mut mpsc::Receiver<FileChunkFrame>,
     status_tx: Option<&watch::Sender<ClientStatus>>,
 ) -> Result<()> {
     let mut req = config
@@ -178,12 +290,30 @@ async fn connect_and_serve(
         tokio::select! {
             outbound = outbound_rx.recv() => {
                 let Some(clip) = outbound else {
-                    debug!("outbound channel closed; exiting");
+                    debug!("outbound channel closed; draining outbound_files before exit");
+                    // Drain any buffered file chunks BEFORE bailing.
+                    // Otherwise a `select!` race on a simultaneous drop
+                    // of both outbound senders can pick the empty clip
+                    // arm first and discard the queued file chunks —
+                    // which is exactly what the `clipboardwire send`
+                    // one-shot path does on completion.
+                    drain_outbound_files(outbound_files_rx, &mut sink).await?;
                     return Ok(());
                 };
                 let json = serde_json::to_string(&Frame::Clip(clip))?;
                 if let Err(e) = sink.send(Message::Text(json.into())).await {
                     warn!(error = %e, "send failed");
+                    return Err(e.into());
+                }
+            }
+            outbound_file = outbound_files_rx.recv() => {
+                let Some(chunk) = outbound_file else {
+                    debug!("outbound files channel closed; exiting");
+                    return Ok(());
+                };
+                let json = serde_json::to_string(&Frame::FileChunk(chunk))?;
+                if let Err(e) = sink.send(Message::Text(json.into())).await {
+                    warn!(error = %e, "file_chunk send failed");
                     return Err(e.into());
                 }
             }
@@ -205,6 +335,15 @@ async fn connect_and_serve(
                             Frame::Clip(clip) => {
                                 if inbound_tx.send(clip).await.is_err() {
                                     return Ok(());
+                                }
+                            }
+                            Frame::FileChunk(chunk) => {
+                                if let Some(tx) = inbound_files_tx.as_ref() {
+                                    if tx.send(chunk).await.is_err() {
+                                        return Ok(());
+                                    }
+                                } else {
+                                    trace!("ignoring inbound file_chunk; no receiver wired");
                                 }
                             }
                             Frame::Error(err) => {
