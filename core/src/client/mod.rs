@@ -6,6 +6,7 @@
 pub mod clipboard;
 pub mod config;
 pub mod file;
+pub mod files_clipboard;
 pub mod tls;
 pub mod transport;
 
@@ -62,15 +63,37 @@ pub async fn run_supervisor(mut clipboard: Clipboard, mut transport: Transport) 
                     debug!("clipboard events channel closed; supervisor exiting");
                     return;
                 };
-                let frame = match change_to_frame(change) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        warn!(error = %format!("{e:#}"), "failed to encode local clip; dropping");
-                        continue;
+                match change {
+                    // Text + image: one frame on the wire each.
+                    ClipChange::Text(_) | ClipChange::Image(_) => {
+                        let frame = match change_to_frame(change) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                warn!(error = %format!("{e:#}"), "failed to encode local clip; dropping");
+                                continue;
+                            }
+                        };
+                        if let Err(e) = transport.outbound_tx.try_send(frame) {
+                            warn!(error = %e, "transport outbound full or closed; dropping local change");
+                        }
                     }
-                };
-                if let Err(e) = transport.outbound_tx.try_send(frame) {
-                    warn!(error = %e, "transport outbound full or closed; dropping local change");
+                    // Files: multi-chunk transfer per path.
+                    ClipChange::Files(paths) => {
+                        for path in paths {
+                            if let Err(e) = file::send_file_through(
+                                &path,
+                                &transport.outbound_files_tx,
+                            )
+                            .await
+                            {
+                                warn!(
+                                    file = %path.display(),
+                                    error = %format!("{e:#}"),
+                                    "failed to send file from clipboard"
+                                );
+                            }
+                        }
+                    }
                 }
             }
             remote = transport.inbound_rx.recv() => {
@@ -108,6 +131,20 @@ pub async fn run_supervisor(mut clipboard: Clipboard, mut transport: Transport) 
                     match receiver.receive_chunk(chunk) {
                         Ok(Some(path)) => {
                             tracing::info!(file = %path.display(), "saved received file");
+                            // Push the assembled file into the local
+                            // OS clipboard so a Ctrl+V in the user's
+                            // file manager pastes it. Each file
+                            // arrives as its own clipboard set — a
+                            // multi-file sender produces multiple
+                            // such events; only the last is kept by
+                            // the OS clipboard (a known limitation
+                            // we'll batch up in a later release).
+                            if let Err(e) = clipboard.apply_tx.send(ClipChange::Files(vec![path])) {
+                                warn!(
+                                    error = %e,
+                                    "clipboard thread gone; can't expose received file in clipboard"
+                                );
+                            }
                         }
                         Ok(None) => {}
                         Err(e) => {
@@ -134,7 +171,10 @@ async fn recv_maybe<T>(rx: Option<&mut tokio::sync::mpsc::Receiver<T>>) -> Optio
     }
 }
 
-/// Encode a local clipboard change into a wire frame.
+/// Encode a *single-frame* clipboard change (text or image) into a
+/// wire frame. File-list changes go through a separate path —
+/// [`send_files_through`] — because each file is a multi-chunk
+/// transfer.
 fn change_to_frame(change: ClipChange) -> Result<ClipFrame> {
     Ok(match change {
         ClipChange::Text(text) => ClipFrame {
@@ -155,6 +195,11 @@ fn change_to_frame(change: ClipChange) -> Result<ClipFrame> {
                 content_b64: Some(STANDARD.encode(png)),
                 from: None,
             }
+        }
+        ClipChange::Files(_) => {
+            // Should never get here — run_supervisor routes Files
+            // events through the file-chunk channel.
+            anyhow::bail!("ClipChange::Files cannot be encoded as a single ClipFrame")
         }
     })
 }

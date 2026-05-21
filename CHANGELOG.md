@@ -18,6 +18,17 @@ follows [Semantic Versioning](https://semver.org).
   exits. Receivers running with the tray (or any client whose
   supervisor is live) save the file under their configured downloads
   dir automatically.
+- **OS file-clipboard integration.** Copy a file in the file manager
+  (Ctrl+C) on the sender, and the receiver pastes it (Ctrl+V) in its
+  own file manager — the received file lands in
+  `~/Downloads/clipboardwire/` and the OS clipboard is set to that
+  path so paste-into-Explorer/Nautilus/Finder works. Backends:
+  - Linux X11: `text/uri-list` selection target via `x11-clipboard`.
+  - Windows: `CF_HDROP` via `clipboard-win`.
+  - macOS: stub for now (use the `send` CLI command on macOS;
+    `NSPasteboardTypeFileURL` follows in a v0.4.x patch).
+  - Linux Wayland: Xwayland fallback covers most setups; native
+    `wl_data_device` follows.
 - **Tray icon status overlay.** Colored dot in the bottom-right of the
   tray icon mirrors the menu's `Status: …` line — green = connected,
   amber = connecting, red = disconnected / hub-bind failure, none =

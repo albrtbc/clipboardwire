@@ -21,6 +21,7 @@
 //! thread's `last_seen_*` tracker to the value we just wrote. The next poll
 //! won't see it as "new" and so won't bounce it back to the hub.
 
+use std::path::PathBuf;
 use std::sync::mpsc as smpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -28,6 +29,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
+
+use super::files_clipboard;
 
 /// Default-buffer size for the outbound events channel.
 const EVENT_BUFFER: usize = 32;
@@ -46,6 +49,13 @@ pub struct ImageBytes {
 pub enum ClipChange {
     Text(String),
     Image(ImageBytes),
+    /// A list of local file paths the user copied (e.g. selected
+    /// files in Nautilus / Explorer / Finder + Ctrl+C). On the
+    /// sender, the supervisor turns each path into a sequence of
+    /// `file_chunk` frames. On the receiver, the clipboard adapter
+    /// sets the OS clipboard to these paths so a `Ctrl+V` in the
+    /// peer's file manager pastes the saved files.
+    Files(Vec<std::path::PathBuf>),
 }
 
 /// Async-side handle to a clipboard:
@@ -94,6 +104,7 @@ fn run_arboard_loop(
     // cache, so each medium needs its own slot.
     let mut last_text: Option<String> = None;
     let mut last_image: Option<ImageBytes> = None;
+    let mut last_files: Option<Vec<PathBuf>> = None;
 
     let poll = Duration::from_millis(poll_ms);
     let mut next_poll = Instant::now() + poll;
@@ -104,7 +115,13 @@ fn run_arboard_loop(
 
         match apply_rx.recv_timeout(wait) {
             Ok(change) => {
-                apply_change(&mut cb, change, &mut last_text, &mut last_image);
+                apply_change(
+                    &mut cb,
+                    change,
+                    &mut last_text,
+                    &mut last_image,
+                    &mut last_files,
+                );
                 continue;
             }
             Err(smpsc::RecvTimeoutError::Timeout) => {}
@@ -116,7 +133,9 @@ fn run_arboard_loop(
 
         next_poll = Instant::now() + poll;
 
-        if let Some(change) = poll_clipboard(&mut cb, &mut last_text, &mut last_image) {
+        if let Some(change) =
+            poll_clipboard(&mut cb, &mut last_text, &mut last_image, &mut last_files)
+        {
             match events_tx.try_send(change) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -136,6 +155,7 @@ fn apply_change(
     change: ClipChange,
     last_text: &mut Option<String>,
     last_image: &mut Option<ImageBytes>,
+    last_files: &mut Option<Vec<PathBuf>>,
 ) {
     match change {
         ClipChange::Text(text) => {
@@ -164,6 +184,19 @@ fn apply_change(
                 *last_image = Some(img);
             }
         }
+        ClipChange::Files(paths) => {
+            trace!(kind = "files", count = paths.len(), "applying clip");
+            match files_clipboard::write_files(&paths) {
+                Ok(()) => {
+                    // Echo suppression: when our own poll next runs
+                    // it'll find these exact paths and skip them.
+                    *last_files = Some(paths);
+                }
+                Err(e) => {
+                    warn!(error = %format!("{e:#}"), "clipboard set_files failed");
+                }
+            }
+        }
     }
 }
 
@@ -171,8 +204,25 @@ fn poll_clipboard(
     cb: &mut arboard::Clipboard,
     last_text: &mut Option<String>,
     last_image: &mut Option<ImageBytes>,
+    last_files: &mut Option<Vec<PathBuf>>,
 ) -> Option<ClipChange> {
-    // Image first: on most platforms the image clipboard slot is distinct
+    // Files first: they're the most explicit "user intent to share"
+    // (Ctrl+C in a file manager) and have higher priority than a
+    // stray text selection that may also be on the clipboard.
+    match files_clipboard::read_files() {
+        Ok(Some(paths)) if !paths.is_empty() => {
+            if last_files.as_deref() != Some(paths.as_slice()) {
+                *last_files = Some(paths.clone());
+                return Some(ClipChange::Files(paths));
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            trace!(error = %format!("{e:#}"), "files_clipboard read transient failure");
+        }
+    }
+
+    // Image: on most platforms the image clipboard slot is distinct
     // from the text slot, and screenshots are the common "I want this on
     // another machine" case. We still check text every tick.
     match cb.get_image() {
