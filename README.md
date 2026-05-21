@@ -43,8 +43,14 @@ single-user / personal-use deployment on a LAN or VPN.
   `serve`) — the right mode is the default depending on how you launched it.
 - **System-tray app** with live connection status (Connecting / Connected /
   Disconnected — retrying in N s), a Settings GUI, and Start/Stop/Restart
-  controls for the embedded hub. The tray exists on Linux (X11 + Wayland via
-  GTK + libayatana-appindicator) and Windows. macOS coming.
+  controls for the embedded hub. Runs on Linux (X11 + Wayland via GTK +
+  libayatana-appindicator), Windows, and macOS (menu-bar app, no Dock entry).
+- **File sync via the clipboard.** Ctrl+C a file (or several) in
+  Nautilus / Explorer / Finder on one machine; Ctrl+V on another
+  pastes them out of `~/Downloads/clipboardwire/`. Multi-file
+  selections arrive as a single clipboard set after a brief debounce
+  on the receiver. There's also a `clipboardwire send <FILE>` CLI for
+  scripted transfers.
 - **Auto-TLS by default.** First time the hub starts it generates a
   self-signed cert under `~/.config/clipboardwire/` (or the platform
   equivalent) with sensible SANs and logs the SHA-256 fingerprint. Clients
@@ -66,40 +72,49 @@ single-user / personal-use deployment on a LAN or VPN.
 ### Linux (deb)
 
 ```sh
-curl -LO https://github.com/davefx/clipboardwire/releases/latest/download/clipboardwire_0.3.3-1_amd64.deb
-sudo apt install ./clipboardwire_0.3.3-1_amd64.deb
+curl -LO https://github.com/davefx/clipboardwire/releases/latest/download/clipboardwire_0.4.1-1_amd64.deb
+sudo apt install ./clipboardwire_0.4.1-1_amd64.deb
 clipboardwire   # opens the tray; first run pops the Settings dialog
 ```
 
 ### Linux (rpm)
 
 ```sh
-curl -LO https://github.com/davefx/clipboardwire/releases/latest/download/clipboardwire-0.3.3-1.x86_64.rpm
-sudo dnf install ./clipboardwire-0.3.3-1.x86_64.rpm
+curl -LO https://github.com/davefx/clipboardwire/releases/latest/download/clipboardwire-0.4.1-1.x86_64.rpm
+sudo dnf install ./clipboardwire-0.4.1-1.x86_64.rpm
 ```
 
 ### Windows
 
-Download `clipboardwire-0.3.3-x86_64.msi` from the
+Download `clipboardwire-0.4.1-x86_64.msi` from the
 [latest release](https://github.com/davefx/clipboardwire/releases/latest)
 and double-click it. The installer creates a Start Menu shortcut, a Desktop
 shortcut, and registers a `HKCU\Run` entry so the tray comes up at login.
 
 ### macOS
 
-A universal binary (Apple Silicon + Intel) is attached to each release.
-
 ```sh
-curl -LO https://github.com/davefx/clipboardwire/releases/latest/download/clipboardwire-macos-universal
-chmod +x clipboardwire-macos-universal
-sudo mv clipboardwire-macos-universal /usr/local/bin/clipboardwire
-clipboardwire
+brew install --cask davefx/clipboardwire/clipboardwire
 ```
 
-macOS will quarantine the unsigned binary. The first launch surfaces a
-"cannot verify developer" warning — open *System Settings → Privacy &
-Security*, scroll to the bottom, and click *Open Anyway*. A proper
-`.app` / `.dmg` bundle + a Homebrew tap will land with v0.4.
+That uses the [davefx/homebrew-clipboardwire](https://github.com/davefx/homebrew-clipboardwire)
+tap and downloads `clipboardwire-macos-universal.dmg` from the latest
+release. `brew upgrade --cask clipboardwire` picks up new releases.
+
+Or grab the DMG directly:
+
+```sh
+curl -LO https://github.com/davefx/clipboardwire/releases/latest/download/clipboardwire-macos-universal.dmg
+hdiutil attach clipboardwire-macos-universal.dmg
+cp -R "/Volumes/clipboardwire/clipboardwire.app" /Applications/
+hdiutil detach "/Volumes/clipboardwire"
+open /Applications/clipboardwire.app
+```
+
+The binary is unsigned, so the first launch shows a "cannot verify
+developer" warning. Open *System Settings → Privacy & Security*,
+scroll to the bottom, and click *Open Anyway*. clipboardwire lives
+in the menu bar (LSUIElement) — no Dock icon.
 
 ### Cargo (any platform with Rust 1.89+)
 
@@ -244,14 +259,22 @@ xvfb-run -a cargo test --workspace -- --ignored        # tray + DBus + UIA
 
 ## Status & roadmap
 
-Currently shipping: **v0.3.3** — see [CHANGELOG.md](CHANGELOG.md).
+Currently shipping: **v0.4.1** — see [CHANGELOG.md](CHANGELOG.md).
 
-Planned for v0.4:
+v0.4 shipped the big v0.4 roadmap items: file sync via the clipboard
+(Linux X11, Windows CF_HDROP, macOS NSPasteboardTypeFileURL), tray
+icon status overlay, "Pin from server" button in the Settings dialog,
+macOS `.app` / `.dmg` packaging, and a Homebrew tap.
 
-- File transfer (clipboard "files" → byte stream over the same connection)
-- Tray icon overlays (status as a colored dot instead of a menu line)
-- Pin self-signed certs from the Settings GUI
-- macOS native packaging (`.dmg` / Homebrew tap)
+Still on the list for later patches:
+
+- Native Wayland file-clipboard via `wl_data_device` (Xwayland
+  already covers most setups, so the urgency is low).
+- A "stop hub at quit" semantics polish so the embedded hub task
+  doesn't outlive the tray if the system shutdowns it via signal.
+- End-to-end encryption between peers — for a deployment shape
+  where the hub is on hardware you don't trust (the current
+  threat model assumes the hub is in the trust boundary).
 
 ## Contributing
 

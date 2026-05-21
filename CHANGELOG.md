@@ -4,7 +4,21 @@ All notable changes to clipboardwire are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org).
 
-## [Unreleased] — v0.4.0 in progress
+## [0.4.1] — 2026-05-21
+
+### Added
+- **Multi-file Ctrl+C now arrives as a single clipboard set.**
+  Receiver-side debounce: file completions accumulate for 500 ms,
+  then the whole batch is applied to the OS clipboard at once. A
+  `Ctrl+C` of 5 files on the sender ends up with all 5 ready to
+  paste on the receiver, not just the last one to finish
+  transferring (the v0.4.0 known limitation).
+- **Tray icon live-reloads on system theme change.** A 5-second
+  background poll re-runs `dark_light::detect()`; if the value
+  flips, the icon is rebuilt and swapped in place. No more stuck
+  mono-dark icon after a manual light-mode toggle mid-session.
+
+## [0.4.0] — 2026-05-21
 
 ### Added
 - **File transfer (PROTOCOL v0.3.0).** New `file_chunk` frame type
@@ -190,6 +204,8 @@ follows [Semantic Versioning](https://semver.org).
   TLS via `rustls`, native `.deb` / `.rpm` / `.msi` packages, GitHub
   Actions CI matrix on Linux + Windows.
 
+[0.4.1]: https://github.com/davefx/clipboardwire/releases/tag/v0.4.1
+[0.4.0]: https://github.com/davefx/clipboardwire/releases/tag/v0.4.0
 [0.3.3]: https://github.com/davefx/clipboardwire/releases/tag/v0.3.3
 [0.3.2]: https://github.com/davefx/clipboardwire/releases/tag/v0.3.2
 [0.3.1]: https://github.com/davefx/clipboardwire/releases/tag/v0.3.1
