@@ -35,6 +35,11 @@ pub struct ServerConfig {
     /// just the auto-generated self-signed TLS cert + key). If `None`,
     /// the auto-gen code falls back to a platform data dir.
     pub state_dir: Option<PathBuf>,
+    /// Optional live counter the hub task updates on every client
+    /// register/deregister. Embedded-hub callers (the tray) clone this
+    /// into the config to surface the connected-peers count in the
+    /// tray tooltip; standalone `serve` users leave it `None`.
+    pub stats: Option<crate::server::hub::HubStatsSink>,
 }
 
 impl ServerConfig {
@@ -107,6 +112,7 @@ impl ServerConfig {
             tls_key_file,
             tls_disabled,
             state_dir,
+            stats: None,
         })
     }
 
@@ -195,6 +201,7 @@ impl ServerConfig {
             tls_key_file,
             tls_disabled,
             state_dir,
+            stats: None,
         })
     }
 }

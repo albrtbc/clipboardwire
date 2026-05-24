@@ -4,6 +4,22 @@ All notable changes to clipboardwire are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Added
+- Tray tooltip now shows the connected-peer count when the embedded
+  hub is running. Lines like `hub running (3 clients connected)`
+  appear below the existing status / server line so you can see at a
+  glance how many of your devices are wired into the local hub. The
+  count includes our own loopback supervisor (the hub treats it as
+  a peer like any other), so a freshly-started embedded hub with no
+  remote peers reads `1 client connected`.
+
+  Backed by a new `HubStatsSink` (Arc&lt;AtomicUsize&gt;) the hub task
+  updates on every register/deregister, plugged into `ServerConfig`
+  by the tray. A 1-second poller posts a `HubPeerCountChanged`
+  event on count shifts; the tooltip rebuilds on each.
+
 ## [0.4.1] — 2026-05-21
 
 ### Added

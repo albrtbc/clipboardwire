@@ -341,6 +341,7 @@ mod tests {
                 tls_key_file: None,
                 tls_disabled: true,
                 state_dir: None,
+                stats: None,
             }),
             conn_sem: Arc::new(Semaphore::new(8)),
         }

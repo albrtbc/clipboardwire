@@ -29,6 +29,7 @@ use std::process::Child;
 
 use anyhow::{Context, Result};
 use clipboardwire_core::client::{ClientConfig, ClientStatus};
+use clipboardwire_core::server::hub::HubStatsSink;
 use tao::event::Event;
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tokio::runtime::{Handle, Runtime};
@@ -60,6 +61,10 @@ enum UserEvent {
     /// Triggers an icon rebuild so the mono variant matches the new
     /// tray background.
     ThemeChanged(Option<dark_light::Mode>),
+    /// The embedded hub's connected-peer count changed since the last
+    /// poll. The handler just calls `refresh_tooltip`, which reads
+    /// the live count straight from `state.hub_stats`.
+    HubPeerCountChanged,
 }
 
 /// How often the background task re-checks the system theme. 5 s is
@@ -67,6 +72,11 @@ enum UserEvent {
 /// enough that the per-poll dark_light::detect() (which reaches DBus
 /// on Linux) doesn't show up in profiles.
 const THEME_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How often the embedded-hub poller re-reads its connected-peer
+/// count. The read is a single atomic load, so a 1 s cadence has no
+/// measurable cost.
+const HUB_STATS_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Tray-level handles that need to outlive a Reload event.
 struct State {
@@ -83,6 +93,15 @@ struct State {
     /// the user doesn't have to read the log to understand why nothing
     /// works.
     hub_bind_error: Option<String>,
+    /// Live counter the embedded hub task updates on every client
+    /// register/deregister. `Some` while the hub is running, `None`
+    /// otherwise. The poller task reads from this; the tooltip folds
+    /// it into the "X peers connected" suffix.
+    hub_stats: Option<HubStatsSink>,
+    /// JoinHandle for the per-hub-session background task that polls
+    /// `hub_stats` and posts a `HubPeerCountChanged` event when the
+    /// count shifts. Aborted alongside the hub itself.
+    hub_stats_poller: Option<JoinHandle<()>>,
     /// PID of the currently-running settings subprocess, if any.
     /// We don't keep the `Child` here because the watcher thread owns
     /// it; this is just for "is one running" checks.
@@ -200,6 +219,8 @@ pub fn run(
         embedded_hub: None,
         embedded_hub_gen: 0,
         hub_bind_error: None,
+        hub_stats: None,
+        hub_stats_poller: None,
         settings_alive: false,
         cfg: initial_config,
     };
@@ -305,6 +326,9 @@ pub fn run(
                 warn!(gen = generation, summary, "embedded hub exited on its own");
                 update_hub_menu(&state, &start_hub_item, &stop_hub_item, &restart_hub_item);
             }
+            Event::UserEvent(UserEvent::HubPeerCountChanged) => {
+                refresh_tooltip(&tray, &state, &config_path);
+            }
             Event::UserEvent(UserEvent::ThemeChanged(new_theme)) => {
                 info!(?new_theme, "system theme changed; refreshing tray icon");
                 theme = new_theme;
@@ -353,6 +377,10 @@ fn abort_running(state: &mut State) {
     }
     state.client_status = None;
     state.hub_bind_error = None;
+    state.hub_stats = None;
+    if let Some(p) = state.hub_stats_poller.take() {
+        p.abort();
+    }
 }
 
 fn reload_config_into(state: &mut State, config_path: &Path) {
@@ -485,6 +513,11 @@ fn start_embedded_hub_with_cfg(
     if server_cfg.state_dir.is_none() {
         server_cfg.state_dir = config_path.parent().map(|p| p.to_path_buf());
     }
+    // Attach a live stats sink so the tooltip can surface the
+    // connected-peer count. We keep our own clone in `state` and
+    // hand the second clone to the hub task.
+    let stats = HubStatsSink::new();
+    server_cfg.stats = Some(stats.clone());
 
     let (listener, addr) = match handle.block_on(clipboardwire_core::server::bind(&server_cfg)) {
         Ok((l, a)) => l_and_a_clear(state, l, a),
@@ -531,6 +564,31 @@ fn start_embedded_hub_with_cfg(
         result
     });
     state.embedded_hub = Some(h);
+
+    // Background stats poller — fires HubPeerCountChanged on the tao
+    // event loop whenever the connected-peer count shifts, so the
+    // tooltip stays accurate without us having to interrupt the
+    // hub task or contend on the inbox.
+    let stats_for_poller = stats.clone();
+    let proxy_for_stats = proxy.clone();
+    let poller = handle.spawn(async move {
+        let mut last = stats_for_poller.current();
+        // Tell the tray the initial value once, then only on change.
+        let _ = proxy_for_stats.send_event(UserEvent::HubPeerCountChanged);
+        let mut tick = tokio::time::interval(HUB_STATS_POLL_INTERVAL);
+        tick.tick().await; // skip the immediate first tick
+        loop {
+            tick.tick().await;
+            let now = stats_for_poller.current();
+            if now != last {
+                last = now;
+                let _ = proxy_for_stats.send_event(UserEvent::HubPeerCountChanged);
+            }
+        }
+    });
+
+    state.hub_stats = Some(stats);
+    state.hub_stats_poller = Some(poller);
     Ok(())
 }
 
@@ -538,6 +596,10 @@ fn stop_embedded_hub(state: &mut State) {
     if let Some(h) = state.embedded_hub.take() {
         h.abort();
         info!("embedded hub stopped");
+    }
+    state.hub_stats = None;
+    if let Some(p) = state.hub_stats_poller.take() {
+        p.abort();
     }
 }
 
@@ -630,7 +692,7 @@ fn refresh_tooltip(tray: &TrayIcon, state: &State, config_path: &Path) {
         )));
         return;
     }
-    let tip = match (&state.cfg, state.client_status) {
+    let mut tip = match (&state.cfg, state.client_status) {
         (None, _) => format!(
             "clipboardwire — needs config (right-click → Edit config)\n{}",
             config_path.display()
@@ -648,7 +710,25 @@ fn refresh_tooltip(tray: &TrayIcon, state: &State, config_path: &Path) {
             cfg.server
         ),
     };
+    // Append the embedded-hub peer count when the hub is running.
+    // Count includes our own loopback supervisor (the hub treats it
+    // as a peer like any other), so a freshly-started embedded hub
+    // with no remote peers shows "1 client".
+    if let Some(stats) = &state.hub_stats {
+        tip.push_str(&format_hub_peer_line(stats.current()));
+    }
     let _ = tray.set_tooltip(Some(tip));
+}
+
+/// Render the per-peer-count suffix that gets appended to the
+/// tooltip when the embedded hub is running. Pulled out for the
+/// unit test below.
+fn format_hub_peer_line(count: usize) -> String {
+    match count {
+        0 => "\nhub running (0 clients connected)".to_string(),
+        1 => "\nhub running (1 client connected)".to_string(),
+        n => format!("\nhub running ({n} clients connected)"),
+    }
 }
 
 /// Launch `clipboardwire settings --config <path>` as a subprocess.
@@ -745,5 +825,26 @@ fn draw_status_dot(rgba: &mut image::RgbaImage, width: u32, height: u32, color: 
                 rgba.put_pixel(x as u32, y as u32, image::Rgba([0, 0, 0, 200]));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hub_peer_line_pluralises() {
+        assert_eq!(
+            format_hub_peer_line(0),
+            "\nhub running (0 clients connected)"
+        );
+        assert_eq!(
+            format_hub_peer_line(1),
+            "\nhub running (1 client connected)"
+        );
+        assert_eq!(
+            format_hub_peer_line(7),
+            "\nhub running (7 clients connected)"
+        );
     }
 }

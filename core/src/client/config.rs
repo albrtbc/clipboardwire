@@ -145,6 +145,7 @@ impl HubConfig {
             tls_key_file: self.tls_key_file.clone(),
             tls_disabled: self.tls_disabled,
             state_dir: self.state_dir.clone(),
+            stats: None,
         }
     }
 }

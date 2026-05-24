@@ -12,6 +12,8 @@
 //! so dropping an intermediate value is acceptable.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -19,6 +21,29 @@ use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::protocol::{ClipFrame, FileChunkFrame};
+
+/// Cheap, lock-free counter of currently-connected hub clients.
+///
+/// Embedded-hub callers (the tray) clone this into [`ServerConfig::stats`]
+/// before spawning the hub, then read [`HubStatsSink::current`] from any
+/// thread to learn the live count. The hub task is the only writer:
+/// `+= 1` on a successful Register, `-= 1` on a Deregister that
+/// actually removed an entry. Initial value is 0.
+#[derive(Debug, Clone, Default)]
+pub struct HubStatsSink {
+    count: Arc<AtomicUsize>,
+}
+
+impl HubStatsSink {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of clients currently registered with the hub.
+    pub fn current(&self) -> usize {
+        self.count.load(Ordering::Relaxed)
+    }
+}
 
 /// Capacity of each per-client outbound clip mpsc.
 pub const PER_CLIENT_CHANNEL_BUF: usize = 32;
@@ -128,14 +153,16 @@ pub(crate) struct Hub {
     clients: HashMap<Uuid, ClientChannels>,
     last_clip: Option<ClipFrame>,
     max_clients: usize,
+    stats: Option<HubStatsSink>,
 }
 
 impl Hub {
-    pub(crate) fn new(max_clients: usize) -> Self {
+    pub(crate) fn new(max_clients: usize, stats: Option<HubStatsSink>) -> Self {
         Self {
             clients: HashMap::new(),
             last_clip: None,
             max_clients,
+            stats,
         }
     }
 
@@ -168,6 +195,9 @@ impl Hub {
                         file: file_outbound,
                     },
                 );
+                if let Some(s) = &self.stats {
+                    s.count.fetch_add(1, Ordering::Relaxed);
+                }
                 let snapshot = self.last_clip.clone();
                 debug!(client = %id, total = self.clients.len(), "registered");
                 let _ = ack.send(RegisterResult::Accepted {
@@ -176,6 +206,9 @@ impl Hub {
             }
             HubMessage::Deregister { id } => {
                 if self.clients.remove(&id).is_some() {
+                    if let Some(s) = &self.stats {
+                        s.count.fetch_sub(1, Ordering::Relaxed);
+                    }
                     debug!(client = %id, total = self.clients.len(), "deregistered");
                 }
             }
@@ -235,8 +268,19 @@ impl Hub {
 /// Returns a cloneable handle for connection tasks and the join handle for
 /// the supervisor (used for orderly shutdown).
 pub fn spawn(max_clients: usize) -> (HubHandle, JoinHandle<()>) {
+    spawn_with_stats(max_clients, None)
+}
+
+/// Like [`spawn`] but additionally takes an optional live counter the
+/// hub task updates on every successful register/deregister. The tray
+/// uses this to show connected-peer counts in the tooltip without
+/// polling the hub over its inbox.
+pub fn spawn_with_stats(
+    max_clients: usize,
+    stats: Option<HubStatsSink>,
+) -> (HubHandle, JoinHandle<()>) {
     let (tx, rx) = mpsc::channel::<HubMessage>(HUB_INBOX_BUF);
-    let hub = Hub::new(max_clients);
+    let hub = Hub::new(max_clients, stats);
     let join = tokio::spawn(hub.run(rx));
     (HubHandle { tx }, join)
 }
@@ -338,6 +382,46 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(third, RegisterResult::AtCapacity));
+    }
+
+    #[tokio::test]
+    async fn stats_sink_tracks_register_and_deregister() {
+        let stats = HubStatsSink::new();
+        assert_eq!(stats.current(), 0);
+        let (hub, _join) = spawn_with_stats(8, Some(stats.clone()));
+
+        let id_a = Uuid::new_v4();
+        let (tx_a, _rx_a) = mpsc::channel(8);
+        hub.register(id_a, tx_a, dummy_file_tx()).await.unwrap();
+        assert_eq!(stats.current(), 1);
+
+        let id_b = Uuid::new_v4();
+        let (tx_b, _rx_b) = mpsc::channel(8);
+        hub.register(id_b, tx_b, dummy_file_tx()).await.unwrap();
+        assert_eq!(stats.current(), 2);
+
+        hub.deregister(id_a).await;
+        // The deregister has to round-trip through the hub task's
+        // inbox before the counter ticks; one yield is enough on
+        // the current-thread runtime.
+        for _ in 0..10 {
+            if stats.current() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(stats.current(), 1);
+    }
+
+    #[tokio::test]
+    async fn stats_sink_does_not_decrement_for_unknown_id() {
+        let stats = HubStatsSink::new();
+        let (hub, _join) = spawn_with_stats(8, Some(stats.clone()));
+        // Deregistering a never-registered id is a no-op and must
+        // not underflow the counter (it's a usize).
+        hub.deregister(Uuid::new_v4()).await;
+        tokio::task::yield_now().await;
+        assert_eq!(stats.current(), 0);
     }
 
     #[tokio::test]

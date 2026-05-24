@@ -30,7 +30,7 @@ pub fn router(state: AppState) -> Router {
 /// Spin up the hub task and build a fully-stateful axum router. Returns the
 /// router plus the hub's join handle (useful for orderly shutdown in tests).
 pub fn build_app(config: ServerConfig) -> (Router, tokio::task::JoinHandle<()>) {
-    let (hub, hub_join) = hub::spawn(config.max_conns);
+    let (hub, hub_join) = hub::spawn_with_stats(config.max_conns, config.stats.clone());
     let conn_sem = Arc::new(Semaphore::new(config.max_conns));
     let state = AppState {
         hub,

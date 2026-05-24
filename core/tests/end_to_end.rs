@@ -46,6 +46,7 @@ async fn start_server(max_conns: usize) -> TestServer {
         tls_key_file: None,
         tls_disabled: true,
         state_dir: None,
+        stats: None,
     };
     let (app, _hub_join) = build_app(cfg);
     let task = tokio::spawn(async move {
