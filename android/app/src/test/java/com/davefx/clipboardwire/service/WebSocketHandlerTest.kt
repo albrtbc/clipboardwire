@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit
 class WebSocketHandlerTest {
 
     private lateinit var server: MockWebServer
+    private var handler: WebSocketHandler? = null
 
     @Before
     fun setUp() {
@@ -21,16 +22,30 @@ class WebSocketHandlerTest {
 
     @After
     fun tearDown() {
-        server.shutdown()
+        handler?.close()
+        handler = null
+        try { server.shutdown() } catch (_: Exception) {}
     }
+
+    private fun createHandler(listener: WebSocketHandler.Listener): WebSocketHandler {
+        val h = WebSocketHandler(
+            serverUrl = "ws://${server.hostName}:${server.port}/sync",
+            user = "alice",
+            password = "hunter2",
+            tlsInsecure = false,
+            listener = listener
+        )
+        handler = h
+        return h
+    }
+
+    private val welcomeJson = """
+        {"type":"welcome","server":"clipboardwire/0.3.0",
+         "client_id":"test-id","last_clip":null}
+    """.trimIndent()
 
     @Test
     fun `connects and receives welcome frame`() {
-        val welcomeJson = """
-            {"type":"welcome","server":"clipboardwire/0.3.0",
-             "client_id":"test-id","last_clip":null}
-        """.trimIndent()
-
         server.enqueue(MockResponse().withWebSocketUpgrade(object : okhttp3.WebSocketListener() {
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
                 webSocket.send(welcomeJson)
@@ -41,55 +56,45 @@ class WebSocketHandlerTest {
         val latch = CountDownLatch(1)
         var receivedWelcome: Protocol.Frame.Welcome? = null
 
-        val handler = WebSocketHandler(
-            serverUrl = "ws://${server.hostName}:${server.port}/sync",
-            user = "alice",
-            password = "hunter2",
-            tlsInsecure = false,
-            listener = object : WebSocketHandler.Listener {
-                override fun onConnected(welcome: Protocol.Frame.Welcome) {
-                    receivedWelcome = welcome
-                    latch.countDown()
-                }
-                override fun onClipReceived(clip: Protocol.Frame.Clip) {}
-                override fun onDisconnected(reason: String) {}
-                override fun onError(error: String) {}
+        val h = createHandler(object : WebSocketHandler.Listener {
+            override fun onConnected(welcome: Protocol.Frame.Welcome) {
+                receivedWelcome = welcome
+                latch.countDown()
             }
-        )
-        handler.connect()
+            override fun onClipReceived(clip: Protocol.Frame.Clip) {}
+            override fun onDisconnected(reason: String) {}
+            override fun onError(error: String) {}
+        })
+        h.connect()
 
         assertTrue("should receive welcome within 5s", latch.await(5, TimeUnit.SECONDS))
         assertEquals("test-id", receivedWelcome?.clientId)
-        handler.close()
     }
 
     @Test
     fun `sends basic auth header on upgrade`() {
-        server.enqueue(MockResponse().withWebSocketUpgrade(object : okhttp3.WebSocketListener() {}))
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : okhttp3.WebSocketListener() {
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                webSocket.send(welcomeJson)
+            }
+        }))
         server.start()
 
         val latch = CountDownLatch(1)
-        val handler = WebSocketHandler(
-            serverUrl = "ws://${server.hostName}:${server.port}/sync",
-            user = "alice",
-            password = "hunter2",
-            tlsInsecure = false,
-            listener = object : WebSocketHandler.Listener {
-                override fun onConnected(welcome: Protocol.Frame.Welcome) {}
-                override fun onClipReceived(clip: Protocol.Frame.Clip) {}
-                override fun onDisconnected(reason: String) { latch.countDown() }
-                override fun onError(error: String) { latch.countDown() }
-            }
-        )
-        handler.connect()
-        Thread.sleep(500)
+        val h = createHandler(object : WebSocketHandler.Listener {
+            override fun onConnected(welcome: Protocol.Frame.Welcome) { latch.countDown() }
+            override fun onClipReceived(clip: Protocol.Frame.Clip) {}
+            override fun onDisconnected(reason: String) {}
+            override fun onError(error: String) {}
+        })
+        h.connect()
+        assertTrue(latch.await(5, TimeUnit.SECONDS))
 
         val request = server.takeRequest(2, TimeUnit.SECONDS)
         assertNotNull("upgrade request should arrive", request)
         val authHeader = request!!.getHeader("Authorization")
         assertNotNull("Authorization header must be present", authHeader)
         assertTrue("must be Basic auth", authHeader!!.startsWith("Basic "))
-        handler.close()
     }
 
     @Test
@@ -102,11 +107,7 @@ class WebSocketHandlerTest {
 
         server.enqueue(MockResponse().withWebSocketUpgrade(object : okhttp3.WebSocketListener() {
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
-                val welcome = """
-                    {"type":"welcome","server":"clipboardwire/0.3.0",
-                     "client_id":"me","last_clip":null}
-                """.trimIndent()
-                webSocket.send(welcome)
+                webSocket.send(welcomeJson)
                 webSocket.send(clipJson)
             }
         }))
@@ -115,95 +116,69 @@ class WebSocketHandlerTest {
         val latch = CountDownLatch(1)
         var receivedClip: Protocol.Frame.Clip? = null
 
-        val handler = WebSocketHandler(
-            serverUrl = "ws://${server.hostName}:${server.port}/sync",
-            user = "alice",
-            password = "hunter2",
-            tlsInsecure = false,
-            listener = object : WebSocketHandler.Listener {
-                override fun onConnected(welcome: Protocol.Frame.Welcome) {}
-                override fun onClipReceived(clip: Protocol.Frame.Clip) {
-                    receivedClip = clip
-                    latch.countDown()
-                }
-                override fun onDisconnected(reason: String) {}
-                override fun onError(error: String) {}
+        val h = createHandler(object : WebSocketHandler.Listener {
+            override fun onConnected(welcome: Protocol.Frame.Welcome) {}
+            override fun onClipReceived(clip: Protocol.Frame.Clip) {
+                receivedClip = clip
+                latch.countDown()
             }
-        )
-        handler.connect()
+            override fun onDisconnected(reason: String) {}
+            override fun onError(error: String) {}
+        })
+        h.connect()
 
         assertTrue("should receive clip within 5s", latch.await(5, TimeUnit.SECONDS))
         assertEquals("hello from peer", receivedClip?.content)
         assertEquals("other", receivedClip?.from)
-        handler.close()
     }
 
     @Test
     fun `sendText delivers message to server`() {
-        val latch = CountDownLatch(1)
+        val messageLatch = CountDownLatch(1)
         var receivedMessage: String? = null
 
         server.enqueue(MockResponse().withWebSocketUpgrade(object : okhttp3.WebSocketListener() {
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
-                val welcome = """
-                    {"type":"welcome","server":"clipboardwire/0.3.0",
-                     "client_id":"me","last_clip":null}
-                """.trimIndent()
-                webSocket.send(welcome)
+                webSocket.send(welcomeJson)
             }
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
                 receivedMessage = text
-                latch.countDown()
+                messageLatch.countDown()
             }
         }))
         server.start()
 
         val connectedLatch = CountDownLatch(1)
-        val handler = WebSocketHandler(
-            serverUrl = "ws://${server.hostName}:${server.port}/sync",
-            user = "alice",
-            password = "hunter2",
-            tlsInsecure = false,
-            listener = object : WebSocketHandler.Listener {
-                override fun onConnected(welcome: Protocol.Frame.Welcome) {
-                    connectedLatch.countDown()
-                }
-                override fun onClipReceived(clip: Protocol.Frame.Clip) {}
-                override fun onDisconnected(reason: String) {}
-                override fun onError(error: String) {}
+        val h = createHandler(object : WebSocketHandler.Listener {
+            override fun onConnected(welcome: Protocol.Frame.Welcome) {
+                connectedLatch.countDown()
             }
-        )
-        handler.connect()
+            override fun onClipReceived(clip: Protocol.Frame.Clip) {}
+            override fun onDisconnected(reason: String) {}
+            override fun onError(error: String) {}
+        })
+        h.connect()
         assertTrue(connectedLatch.await(5, TimeUnit.SECONDS))
 
-        val clipJson = Protocol.buildClipText("outbound text")
-        handler.sendText(clipJson)
+        h.sendText(Protocol.buildClipText("outbound text"))
 
-        assertTrue("server should receive the message", latch.await(5, TimeUnit.SECONDS))
+        assertTrue("server should receive the message", messageLatch.await(5, TimeUnit.SECONDS))
         assertNotNull(receivedMessage)
         assertTrue(receivedMessage!!.contains("outbound text"))
-        handler.close()
     }
 
     @Test
-    fun `calls onDisconnected when server closes`() {
-        server.enqueue(MockResponse().withWebSocketUpgrade(object : okhttp3.WebSocketListener() {
-            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
-                val welcome = """
-                    {"type":"welcome","server":"clipboardwire/0.3.0",
-                     "client_id":"me","last_clip":null}
-                """.trimIndent()
-                webSocket.send(welcome)
-                webSocket.close(1000, "bye")
-            }
-        }))
+    fun `calls onDisconnected when connection fails`() {
+        // Point at a port with nothing listening.
         server.start()
+        val port = server.port
+        server.shutdown()
 
         val latch = CountDownLatch(1)
         var disconnectReason: String? = null
 
-        val handler = WebSocketHandler(
-            serverUrl = "ws://${server.hostName}:${server.port}/sync",
+        val h = WebSocketHandler(
+            serverUrl = "ws://127.0.0.1:$port/sync",
             user = "alice",
             password = "hunter2",
             tlsInsecure = false,
@@ -217,10 +192,10 @@ class WebSocketHandlerTest {
                 override fun onError(error: String) {}
             }
         )
-        handler.connect()
+        handler = h
+        h.connect()
 
         assertTrue("should get disconnect callback", latch.await(5, TimeUnit.SECONDS))
         assertNotNull(disconnectReason)
-        handler.close()
     }
 }

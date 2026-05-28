@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.davefx.clipboardwire"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.davefx.clipboardwire"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "0.4.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -33,6 +33,7 @@ android {
     }
 
     kotlinOptions { jvmTarget = "1.8" }
+    testOptions { unitTests.isReturnDefaultValues = true }
     buildFeatures { compose = true; buildConfig = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.8" }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }

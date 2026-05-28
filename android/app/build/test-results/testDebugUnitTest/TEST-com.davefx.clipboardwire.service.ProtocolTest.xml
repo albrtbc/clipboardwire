@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.davefx.clipboardwire.service.ProtocolTest" tests="12" skipped="0" failures="0" errors="0" timestamp="2026-05-28T10:43:47" hostname="antero" time="0.032">
+  <properties/>
+  <testcase name="parse welcome frame with cached text clip" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.001"/>
+  <testcase name="buildClipText produces valid frame" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.003"/>
+  <testcase name="parse error frame" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.002"/>
+  <testcase name="buildClipImage produces valid frame" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.001"/>
+  <testcase name="parse image clip frame" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.003"/>
+  <testcase name="parse welcome frame without last_clip" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.003"/>
+  <testcase name="parse text clip frame" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.001"/>
+  <testcase name="buildClipText round-trips through parseFrame" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.005"/>
+  <testcase name="buildClipImage round-trips through parseFrame" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.002"/>
+  <testcase name="parse clip frame without from field" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.001"/>
+  <testcase name="each buildClipText call generates a unique id" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.001"/>
+  <testcase name="unknown frame type returns Unknown" classname="com.davefx.clipboardwire.service.ProtocolTest" time="0.005"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

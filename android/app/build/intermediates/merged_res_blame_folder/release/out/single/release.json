@@ -1,0 +1,50 @@
+[
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-hdpi_ic_launcher.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-hdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-xhdpi_ic_launcher_round.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-xhdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-xxhdpi_ic_launcher_round.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-xxhdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-xhdpi_ic_launcher.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-xhdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-mdpi_ic_launcher_round.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-mdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "/home/davefx/.gradle/daemon/8.5/com.davefx.clipboardwire.app-merged_res-44:/xml_network_security_config.xml.flat",
+        "source": "/home/davefx/.gradle/daemon/8.5/com.davefx.clipboardwire.app-main-45:/xml/network_security_config.xml"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-xxxhdpi_ic_launcher_round.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-xxxhdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-mdpi_ic_launcher.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-mdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-hdpi_ic_launcher_round.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-hdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "/home/davefx/.gradle/daemon/8.5/com.davefx.clipboardwire.app-merged_res-44:/xml_file_paths.xml.flat",
+        "source": "/home/davefx/.gradle/daemon/8.5/com.davefx.clipboardwire.app-main-45:/xml/file_paths.xml"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-xxhdpi_ic_launcher.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-xxhdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.davefx.clipboardwire.app-merged_res-44:/mipmap-xxxhdpi_ic_launcher.png.flat",
+        "source": "com.davefx.clipboardwire.app-main-45:/mipmap-xxxhdpi/ic_launcher.png"
+    }
+]
