@@ -26,7 +26,7 @@ services:
       - "8484:8484"
     environment:
       CLIPBOARDWIRE_BIND: "0.0.0.0:8484"
-      CLIPBOARDWIRE_USER: "albert"
+      CLIPBOARDWIRE_USER: "youruser"
       # Password is read from a file (Docker secret), never inlined here.
       CLIPBOARDWIRE_PASSWORD_FILE: "/run/secrets/cw_pass"
       # mkcert-issued cert + key (mounted read-only below). Setting these makes
