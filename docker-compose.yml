@@ -1,0 +1,45 @@
+# clipboardwire hub — self-hosted server deployment.
+#
+# Two ways to run this:
+#
+#   1. Pull the prebuilt image published by the fork's CI (recommended):
+#        docker compose pull && docker compose up -d
+#      (set `image:` below to your GHCR path and comment out `build:`)
+#
+#   2. Build locally from this checkout:
+#        docker compose up -d --build
+#
+# TLS: this points the hub at an existing mkcert-issued cert+key. Generate it
+# on the host with, e.g.:
+#        mkcert -cert-file cw.crt -key-file cw.key myserver.lan 192.168.1.50
+# Clients then trust it by setting `tls_ca_file` to the mkcert rootCA.pem
+# (find it with `mkcert -CAROOT`) — clipboardwire does NOT read the OS trust
+# store. The cert's SANs must include the host/IP clients use in `server =`.
+
+services:
+  clipboardwire:
+    # Comment out `build` and uncomment `image` to consume the published image.
+    build: .
+    # image: ghcr.io/YOUR_ORG/clipboardwire:latest
+    restart: unless-stopped
+    ports:
+      - "8484:8484"
+    environment:
+      CLIPBOARDWIRE_BIND: "0.0.0.0:8484"
+      CLIPBOARDWIRE_USER: "albert"
+      # Password is read from a file (Docker secret), never inlined here.
+      CLIPBOARDWIRE_PASSWORD_FILE: "/run/secrets/cw_pass"
+      # mkcert-issued cert + key (mounted read-only below). Setting these makes
+      # the hub serve wss:// with your cert and skip self-signed generation.
+      CLIPBOARDWIRE_TLS_CERT_FILE: "/certs/cw.crt"
+      CLIPBOARDWIRE_TLS_KEY_FILE: "/certs/cw.key"
+      RUST_LOG: "clipboardwire_core=info,clipboardwire_server=info"
+    volumes:
+      - ./cw.crt:/certs/cw.crt:ro
+      - ./cw.key:/certs/cw.key:ro
+    secrets:
+      - cw_pass
+
+secrets:
+  cw_pass:
+    file: ./cw_pass.txt

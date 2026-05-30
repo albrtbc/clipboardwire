@@ -1,0 +1,24 @@
+# A headless, GUI-free hub binary for container/server deployments.
+#
+# Unlike the `clipboardwire` binary in `cli/`, this crate depends *only* on
+# `clipboardwire-core` — it pulls in none of the tray/GUI stack (tray-icon,
+# tao, eframe, GTK/X11), so it links and runs in a minimal image with no
+# desktop runtime libraries. It is `clipboardwire serve` and nothing else.
+[package]
+name = "clipboardwire-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Headless clipboardwire hub for server/container deployments"
+
+[[bin]]
+name = "clipboardwire-server"
+path = "src/main.rs"
+
+[dependencies]
+clipboardwire-core = { path = "../core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

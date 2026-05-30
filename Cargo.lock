@@ -1074,6 +1074,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "clipboardwire-server"
+version = "0.4.6"
+dependencies = [
+ "anyhow",
+ "clipboardwire-core",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
