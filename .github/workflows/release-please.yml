@@ -1,0 +1,34 @@
+# Automated releases via release-please.
+#
+# On every push to main, release-please reads Conventional Commits and keeps
+# a "release PR" open that bumps the version (Cargo.toml [workspace.package])
+# and updates CHANGELOG.md. Merging that PR creates the GitHub Release + the
+# `vX.Y.Z` tag.
+#
+# That tag then triggers the existing `release.yml` (desktop binaries) and
+# `docker.yml` (image) workflows — BUT only if the tag is created with a PAT.
+# Tags created with the default GITHUB_TOKEN do NOT trigger other workflows
+# (GitHub's anti-recursion rule). So set a repo secret RELEASE_PLEASE_TOKEN to
+# a fine-grained PAT with `contents: write` + `workflows`/`actions` on this
+# repo. Without it, release-please still opens/merges the PR and creates the
+# release, but the binary builds won't fire automatically.
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
