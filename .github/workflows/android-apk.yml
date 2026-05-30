@@ -1,0 +1,37 @@
+# Build the Android client APK and publish it as a downloadable artifact.
+#
+# Upstream CI only runs the Android tests; it never produces an installable
+# APK. This fork-specific workflow builds a debug APK (signed with the debug
+# keystore, fine for sideloading) so it can be installed without a local
+# Android toolchain.
+#
+# Get the APK: Actions -> this run -> Artifacts -> clipboardwire-apk.
+name: android-apk
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipboardwire-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
