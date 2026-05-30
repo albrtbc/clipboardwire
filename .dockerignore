@@ -1,0 +1,15 @@
+# Keep the build context small and the cargo build deterministic.
+target/
+android/
+assets/
+.git/
+.github/
+*.md
+docker-compose.yml
+.dockerignore
+Dockerfile
+# Local secrets / certs must never enter the image build context.
+cw_pass.txt
+*.crt
+*.key
+*.pem
