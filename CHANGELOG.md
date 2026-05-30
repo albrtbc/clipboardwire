@@ -4,6 +4,45 @@ All notable changes to clipboardwire are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org).
 
+## [0.5.0](https://github.com/albrtbc/clipboardwire/compare/v0.4.6...v0.5.0) (2026-05-30)
+
+
+### Features
+
+* **android:** add native Kotlin clipboard sync client ([aaae916](https://github.com/albrtbc/clipboardwire/commit/aaae916b92acb29f946e8b5444b85d7b303efa85))
+* **client:** Phase 2 — clipboard adapter, transport, supervisor ([9e35dc9](https://github.com/albrtbc/clipboardwire/commit/9e35dc92fb7f5db631a286befc25e13e9258c169))
+* **docker:** headless server crate + GHCR image pipeline ([d97dab7](https://github.com/albrtbc/clipboardwire/commit/d97dab7ca5eabda740c5cc143b7a381abfe40c1a))
+* **icon:** clipboard-on-a-wire-bus tray icon, theme-aware ([aaa1f36](https://github.com/albrtbc/clipboardwire/commit/aaa1f363a3e96f3a1d71e75e1928ce877ee5ba6d))
+* **server:** Phase 1 — hub server, axum + tokio-tungstenite ([7f5a591](https://github.com/albrtbc/clipboardwire/commit/7f5a5917e5104afb9d4dab25505b63052846c840))
+* **tls:** built-in rustls support on server and client ([051e1fc](https://github.com/albrtbc/clipboardwire/commit/051e1fcf4672f25a2def0a9a1044f0aac05618a2))
+* **tray:** show client connection status in menu + tooltip ([db3bac6](https://github.com/albrtbc/clipboardwire/commit/db3bac6549b54a20aaeeb987af43231aee308713))
+* **tray:** show embedded-hub peer count in the tooltip ([0106117](https://github.com/albrtbc/clipboardwire/commit/01061177241c3a1257e6f99800f9ed00e38848b3))
+* v0.2 — protocol bump, image clipboard, cross-platform tray ([7b0c765](https://github.com/albrtbc/clipboardwire/commit/7b0c76562a1db0f41d62515166026819ffc85a04))
+* **v0.3.0 wip:** settings dialog, embedded hub mode, Linux interaction tests ([74d272d](https://github.com/albrtbc/clipboardwire/commit/74d272d4027406ebe6e0ca5743b5c9c4123e7f9b))
+* **v0.3.1:** self-signed TLS auto-gen, tray-by-default, hub menu controls ([46396c0](https://github.com/albrtbc/clipboardwire/commit/46396c0ea0ce722f81c1927dfee5742449cfb2cc))
+* **v0.4.x:** batch multi-file receives + live theme reload ([2a13911](https://github.com/albrtbc/clipboardwire/commit/2a139119900e5f9336185c41f7f82a8f10c68d28))
+* **v0.4/macos:** NSPasteboard file URLs adapter ([534c2ae](https://github.com/albrtbc/clipboardwire/commit/534c2aef124be0947f04c2f6d7c9e437a3e5e9ff))
+* **v0.4:** file transfer over the same WebSocket (PROTOCOL v0.3.0) ([ffa2f41](https://github.com/albrtbc/clipboardwire/commit/ffa2f4142c937ac3f317539770fddf7f31086413))
+* **v0.4:** OS file-clipboard integration (Linux X11 + Windows CF_HDROP) ([c5a7141](https://github.com/albrtbc/clipboardwire/commit/c5a71416ff55d5d4761a3e04e9b3153950b9d394))
+* **v0.4:** pin self-signed cert from the Settings dialog ([a70676b](https://github.com/albrtbc/clipboardwire/commit/a70676b10f33ea21c7bd787e5189de62f8fb84f3))
+* **v0.4:** tray status overlay + Settings window icon ([507e33b](https://github.com/albrtbc/clipboardwire/commit/507e33b98cd23be8fdd9dcbfea8199204f272df1))
+* **windows:** system-tray UI and MSI installer ([6753779](https://github.com/albrtbc/clipboardwire/commit/6753779977a1b627002c72cf44a1dc7bcb2681e2))
+
+
+### Bug Fixes
+
+* **android:** fix tests, add launcher icons, fix Gradle config ([16c8a4f](https://github.com/albrtbc/clipboardwire/commit/16c8a4fce2eccb2242214808302c38817fba43a6))
+* **ci:** release workflow couldn't produce .msi or .rpm ([b3a93ea](https://github.com/albrtbc/clipboardwire/commit/b3a93ea5d25c07bf4763bdc4ab9b74af5b94a6ff))
+* **ci:** release-please simple type + toml updater for workspace version ([eb83a41](https://github.com/albrtbc/clipboardwire/commit/eb83a4173ecf06acfe0b7cdab929b265235cf8e6))
+* **ci:** use absolute paths in main.wxs via CargoTargetBinDir ([1c34037](https://github.com/albrtbc/clipboardwire/commit/1c34037c2b9bb079d7711b46503d05d52aa866d5))
+* **client:** enable arboard wayland-data-control backend ([78ca934](https://github.com/albrtbc/clipboardwire/commit/78ca934ff381a45f5a501a3df47c25098349ed73))
+* **fmt:** break long tracing layer chain for rustfmt ([b86501e](https://github.com/albrtbc/clipboardwire/commit/b86501e3056428e5c2c2ab071e57e7c71d8644c6))
+* **macos:** compare NSString contents via to_string, not direct == ([8dbd612](https://github.com/albrtbc/clipboardwire/commit/8dbd612993d488d95efd8d097f7ffceb7c6c6607))
+* **macos:** use single deref for NSString-typed static ([05ecd9b](https://github.com/albrtbc/clipboardwire/commit/05ecd9b38b7d28052fc7e7b689a03090739f056c))
+* **tray:** GUI must run even without a valid config ([a3134ac](https://github.com/albrtbc/clipboardwire/commit/a3134acaac0866fbb4010d9c41d2235f0bb886bd))
+* **tray:** real OS event loop (tao) + suppress console window ([e196592](https://github.com/albrtbc/clipboardwire/commit/e1965924a4e48287a13de6e064c2ad7b4e91be3b))
+* **windows:** MSI shortcuts + sane config path ([9d02105](https://github.com/albrtbc/clipboardwire/commit/9d021057ed734d5635e485fc4c6c047ff594b2c9))
+
 ## [0.4.6] — 2026-05-27
 
 ### Fixed
