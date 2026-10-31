@@ -55,7 +55,8 @@ pub enum ClientStatus {
     Disconnected { will_retry_in: Duration },
 }
 
-/// Handle held by the supervisor.
+/// Handle held by the supervisor. Dropping it stops the transport task once
+/// its current connection ends.
 pub struct Transport {
     /// Inbound `clip` frames from the hub (other peers' publishes plus, on
     /// each new connection, the cached `last_clip` from the welcome).
@@ -193,6 +194,13 @@ async fn run_loop(
         if one_shot {
             // The `clipboardwire send` path: a single connect+publish+
             // close cycle is the whole job. Don't reconnect.
+            return;
+        }
+        if outbound_rx.is_closed() {
+            // Every sender is gone (the `Transport` was dropped), so
+            // nobody can use this task any more. Reconnecting would only
+            // loop: each connection would end at once on the closed channel.
+            debug!("transport handle dropped; stopping");
             return;
         }
         // If we held the connection for a while, the backoff resets.

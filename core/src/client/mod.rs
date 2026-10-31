@@ -37,9 +37,20 @@ pub async fn run_with_status(
 ) -> Result<()> {
     let poll_ms = config.poll_ms;
     let (clipboard, _clipboard_join) = clipboard::spawn(poll_ms)?;
-    let (transport, _transport_join) = transport::spawn_with_status(config, status_tx);
+    let (transport, transport_join) = transport::spawn_with_status(config, status_tx);
+    let _transport_guard = AbortOnDrop(transport_join);
     run_supervisor(clipboard, transport).await;
     Ok(())
+}
+
+/// Aborts the task when dropped, so cancelling the supervisor (the tray's
+/// reload) also stops the transport instead of leaving it detached.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Bridge clipboard events ↔ transport frames. Public for the integration

@@ -23,6 +23,7 @@ items below are fork-specific. For protocol/architecture details see
 | Compose template | `docker-compose.yml` | Hub wired to an external (mkcert) cert + a password Docker secret. |
 | Image CI | `.github/workflows/docker.yml` | Builds + pushes to GHCR, versioned from `Cargo.toml`. |
 | Wayland clipboard fix | `core/Cargo.toml` | **Now upstream** (since 0.5.4), no longer a fork change. It enables arboard's `wayland-data-control` so the desktop client sees clipboard changes on wlroots compositors (Hyprland). |
+| Reconnect-loop fix | `core/src/client/transport.rs`, `core/src/client/mod.rs` | After a tray settings save the old transport kept reconnecting forever (1/2/4/8… s). It now stops when its handle is dropped, and cancelling the supervisor aborts it. |
 
 ---
 

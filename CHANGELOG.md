@@ -36,6 +36,12 @@ Synced with upstream v0.5.4.
   `android-apk.yml`, `release-please.yml`) use Node.js 24 action
   majors (the same as upstream where both use an action).
 
+### Fixed
+- **Desktop client reconnect loop after saving the settings.** The tray
+  stopped the supervisor on every settings save but left the old transport
+  running, so it kept reconnecting in a loop (1/2/4/8… s). The transport now
+  stops when its handle is dropped, and cancelling the supervisor aborts it.
+
 ## [0.5.4] — 2026-09-30
 
 ### Fixed
