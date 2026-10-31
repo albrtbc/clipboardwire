@@ -2,13 +2,17 @@
 #
 # Versioning: the image is tagged with the workspace version read from
 # Cargo.toml, so it tracks the upstream release version automatically — when
-# you `git pull upstream` and the version bumps (e.g. 0.4.6 -> 0.4.7), the
-# next push to main publishes :0.4.7 with no manual tagging.
+# you `git pull upstream` and the version bumps (e.g. 0.5.4 -> 0.5.5), the
+# next push to main publishes :0.5.5 with no manual tagging.
 #
-# Tags published:
-#   - push to main          -> :<cargo-version>, :<cargo-version>-<sha>, :latest
-#   - push of a git tag v*  -> :<semver>, :<major>.<minor>  (explicit releases)
-#   - manual run            -> :<cargo-version>, :<cargo-version>-<sha>
+# Tags published (read from the `tags:` block below):
+#   - always (every trigger) -> :<cargo-version>, :<cargo-version>-<sha>
+#   - push to main           -> also :latest
+#   - push of a git tag v*   -> also :<semver>, and :<major>.<minor> unless the
+#                               tag is a pre-release. v0.5.4-fork.1 therefore
+#                               adds only :0.5.4-fork.1; v1.2.3 adds :1.2.3
+#                               and :1.2
+#   - manual run             -> only the two always-published tags
 #
 # :<cargo-version>      moves to the newest build of that version.
 # :<cargo-version>-<sha> is immutable — pin this on the server for repeatable deploys.
@@ -33,7 +37,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Read workspace version
         id: vars
@@ -43,7 +47,7 @@ jobs:
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -51,7 +55,7 @@ jobs:
 
       - name: Derive image tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -62,10 +66,10 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true

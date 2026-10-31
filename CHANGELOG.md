@@ -4,44 +4,137 @@ All notable changes to clipboardwire are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org).
 
-## [0.5.0](https://github.com/albrtbc/clipboardwire/compare/v0.4.6...v0.5.0) (2026-05-30)
+## [0.5.4-fork.1] — 2026-10-31
 
+Fork release of [`albrtbc/clipboardwire`](https://github.com/albrtbc/clipboardwire).
+Synced with upstream v0.5.4.
 
-### Features
+### Added
+- **Headless hub image on GHCR.** The new `server-bin` crate builds a
+  `clipboardwire-server` binary with no tray/GTK dependency, packaged by the
+  fork's `Dockerfile` on a distroless runtime. `docker.yml` publishes it to
+  `ghcr.io/albrtbc/clipboardwire`, tagged from the version in `Cargo.toml`
+  (`:0.5.4`, `:0.5.4-<sha>`, `:latest`).
+- **Android APK as a CI artifact.** `android-apk.yml` builds a debug APK on
+  every push to `main` and on `v*` tags.
+- **`DEPLOYMENT.md`.** Notes for self-hosting the hub in Docker and running
+  the Linux/Wayland client as a systemd user service, plus how the fork
+  stays in sync with upstream.
 
-* **android:** add native Kotlin clipboard sync client ([aaae916](https://github.com/albrtbc/clipboardwire/commit/aaae916b92acb29f946e8b5444b85d7b303efa85))
-* **client:** Phase 2 — clipboard adapter, transport, supervisor ([9e35dc9](https://github.com/albrtbc/clipboardwire/commit/9e35dc92fb7f5db631a286befc25e13e9258c169))
-* **docker:** headless server crate + GHCR image pipeline ([d97dab7](https://github.com/albrtbc/clipboardwire/commit/d97dab7ca5eabda740c5cc143b7a381abfe40c1a))
-* **icon:** clipboard-on-a-wire-bus tray icon, theme-aware ([aaa1f36](https://github.com/albrtbc/clipboardwire/commit/aaa1f363a3e96f3a1d71e75e1928ce877ee5ba6d))
-* **server:** Phase 1 — hub server, axum + tokio-tungstenite ([7f5a591](https://github.com/albrtbc/clipboardwire/commit/7f5a5917e5104afb9d4dab25505b63052846c840))
-* **tls:** built-in rustls support on server and client ([051e1fc](https://github.com/albrtbc/clipboardwire/commit/051e1fcf4672f25a2def0a9a1044f0aac05618a2))
-* **tray:** show client connection status in menu + tooltip ([db3bac6](https://github.com/albrtbc/clipboardwire/commit/db3bac6549b54a20aaeeb987af43231aee308713))
-* **tray:** show embedded-hub peer count in the tooltip ([0106117](https://github.com/albrtbc/clipboardwire/commit/01061177241c3a1257e6f99800f9ed00e38848b3))
-* v0.2 — protocol bump, image clipboard, cross-platform tray ([7b0c765](https://github.com/albrtbc/clipboardwire/commit/7b0c76562a1db0f41d62515166026819ffc85a04))
-* **v0.3.0 wip:** settings dialog, embedded hub mode, Linux interaction tests ([74d272d](https://github.com/albrtbc/clipboardwire/commit/74d272d4027406ebe6e0ca5743b5c9c4123e7f9b))
-* **v0.3.1:** self-signed TLS auto-gen, tray-by-default, hub menu controls ([46396c0](https://github.com/albrtbc/clipboardwire/commit/46396c0ea0ce722f81c1927dfee5742449cfb2cc))
-* **v0.4.x:** batch multi-file receives + live theme reload ([2a13911](https://github.com/albrtbc/clipboardwire/commit/2a139119900e5f9336185c41f7f82a8f10c68d28))
-* **v0.4/macos:** NSPasteboard file URLs adapter ([534c2ae](https://github.com/albrtbc/clipboardwire/commit/534c2aef124be0947f04c2f6d7c9e437a3e5e9ff))
-* **v0.4:** file transfer over the same WebSocket (PROTOCOL v0.3.0) ([ffa2f41](https://github.com/albrtbc/clipboardwire/commit/ffa2f4142c937ac3f317539770fddf7f31086413))
-* **v0.4:** OS file-clipboard integration (Linux X11 + Windows CF_HDROP) ([c5a7141](https://github.com/albrtbc/clipboardwire/commit/c5a71416ff55d5d4761a3e04e9b3153950b9d394))
-* **v0.4:** pin self-signed cert from the Settings dialog ([a70676b](https://github.com/albrtbc/clipboardwire/commit/a70676b10f33ea21c7bd787e5189de62f8fb84f3))
-* **v0.4:** tray status overlay + Settings window icon ([507e33b](https://github.com/albrtbc/clipboardwire/commit/507e33b98cd23be8fdd9dcbfea8199204f272df1))
-* **windows:** system-tray UI and MSI installer ([6753779](https://github.com/albrtbc/clipboardwire/commit/6753779977a1b627002c72cf44a1dc7bcb2681e2))
+### Changed
+- **Synced with upstream v0.5.4.** Brings in upstream's changes since 0.4.6
+  (see 0.5.0 to 0.5.4 below), including upstream's Android fixes (TLS over
+  HTTP/1.1, the Android 14+ foreground service, Wi-Fi-aware reconnect, the
+  battery-optimization prompt).
+- **Wayland clipboard fix now comes from upstream.** Enabling arboard's
+  `wayland-data-control` feature, which the fork had made on its own, is part
+  of upstream since 0.5.4; it is no longer a fork change.
+- **release-please is manual.** `release-please.yml` runs only on
+  `workflow_dispatch`, and its manifest is at 0.5.4. Fork releases are tagged
+  by hand as `v<upstream>-fork.N`.
+- **GitHub Actions: Node.js 24.** The fork's own workflows (`docker.yml`,
+  `android-apk.yml`, `release-please.yml`) use Node.js 24 action
+  majors (the same as upstream where both use an action).
 
+### Fixed
+- **Desktop client reconnect loop after saving the settings.** The tray
+  stopped the supervisor on every settings save but left the old transport
+  running, so it kept reconnecting in a loop (1/2/4/8… s). The transport now
+  stops when its handle is dropped, and cancelling the supervisor aborts it.
 
-### Bug Fixes
+## [0.5.4] — 2026-09-30
 
-* **android:** fix tests, add launcher icons, fix Gradle config ([16c8a4f](https://github.com/albrtbc/clipboardwire/commit/16c8a4fce2eccb2242214808302c38817fba43a6))
-* **ci:** release workflow couldn't produce .msi or .rpm ([b3a93ea](https://github.com/albrtbc/clipboardwire/commit/b3a93ea5d25c07bf4763bdc4ab9b74af5b94a6ff))
-* **ci:** release-please simple type + toml updater for workspace version ([eb83a41](https://github.com/albrtbc/clipboardwire/commit/eb83a4173ecf06acfe0b7cdab929b265235cf8e6))
-* **ci:** use absolute paths in main.wxs via CargoTargetBinDir ([1c34037](https://github.com/albrtbc/clipboardwire/commit/1c34037c2b9bb079d7711b46503d05d52aa866d5))
-* **client:** enable arboard wayland-data-control backend ([78ca934](https://github.com/albrtbc/clipboardwire/commit/78ca934ff381a45f5a501a3df47c25098349ed73))
-* **fmt:** break long tracing layer chain for rustfmt ([b86501e](https://github.com/albrtbc/clipboardwire/commit/b86501e3056428e5c2c2ab071e57e7c71d8644c6))
-* **macos:** compare NSString contents via to_string, not direct == ([8dbd612](https://github.com/albrtbc/clipboardwire/commit/8dbd612993d488d95efd8d097f7ffceb7c6c6607))
-* **macos:** use single deref for NSString-typed static ([05ecd9b](https://github.com/albrtbc/clipboardwire/commit/05ecd9b38b7d28052fc7e7b689a03090739f056c))
-* **tray:** GUI must run even without a valid config ([a3134ac](https://github.com/albrtbc/clipboardwire/commit/a3134acaac0866fbb4010d9c41d2235f0bb886bd))
-* **tray:** real OS event loop (tao) + suppress console window ([e196592](https://github.com/albrtbc/clipboardwire/commit/e1965924a4e48287a13de6e064c2ad7b4e91be3b))
-* **windows:** MSI shortcuts + sane config path ([9d02105](https://github.com/albrtbc/clipboardwire/commit/9d021057ed734d5635e485fc4c6c047ff594b2c9))
+### Fixed
+- **Linux/Wayland: local copies now detected on modern compositors.**
+  Enabled arboard's `wayland-data-control` feature so the client uses a
+  native Wayland clipboard backend (via wl-clipboard-rs ≥ 0.9.2, which
+  supports `ext-data-control-v1`) instead of falling back to X11/XWayland.
+  Previously, text/images copied in native Wayland apps were never picked
+  up and published on compositors that expose only `ext-data-control-v1`
+  and not the older `wlr-data-control-unstable-v1` — e.g. current KDE
+  Plasma 6 — so sync worked one way (remote → local) but not the other
+  (local → remote). ([#7](https://github.com/davefx/clipboardwire/issues/7))
+
+## [0.5.3] — 2026-06-14
+
+### Changed
+- **GitHub Actions: Node.js 24 migration.** Bumped all actions to
+  Node.js 24-compatible versions (`checkout@v6`, `setup-java@v5`,
+  `setup-buildx-action@v4`, `login-action@v4`, `metadata-action@v6`,
+  `build-push-action@v7`, `action-gh-release@v3`) ahead of the
+  June 16 deprecation deadline.
+
+### Added
+- **Android: battery optimization prompt.** The settings screen now
+  shows a card when battery optimization is enabled, with a one-tap
+  button to request exemption. Prevents the system from killing the
+  background sync service.
+- **CI: "recovered" PR notification.** When a CI run succeeds after a
+  previous failure on the same PR, a comment is posted automatically
+  so reviewers know the issue is resolved.
+
+## [0.5.2] — 2026-06-09
+
+### Added
+- **Windows: "Start at login" tray toggle.** A new checkbox in the
+  tray menu reads and writes the `HKCU\…\Run` registry key, so
+  users can enable or disable auto-start without touching the
+  registry manually. Works whether clipboardwire was installed via
+  MSI or as a standalone binary.
+
+### Fixed
+- **CI: `apt-get update` before install.** Release and CI workflows
+  now refresh the package index before `apt-get install`, preventing
+  transient 404 failures when GitHub runner mirrors go stale.
+
+## [0.5.1] — 2026-06-07
+
+### Fixed
+- **Android: WebSocket connections now work with TLS servers.** OkHttp
+  was negotiating HTTP/2 via ALPN, but the server's WebSocket handler
+  only supports upgrade over HTTP/1.1. The client now forces HTTP/1.1.
+- **Android: foreground service no longer killed on Android 14+.** The
+  `FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING` type is now passed to both
+  `startForeground()` and notification updates, as required by API 34+.
+- **Android: persistent notification now visible.** Shows connection
+  status ("Connected", "Disconnected", "Paused") and the server address
+  in the notification body.
+- **Android: cleartext ws:// now works with any IP address.** The
+  previous network security config used `<domain>` entries which don't
+  match IP literals.
+
+### Added
+- **Android: WiFi-aware reconnect.** When the server is a private IP
+  (192.168.x.x, 10.x.x.x, etc.) and the phone is on mobile data, the
+  service pauses with "Waiting for WiFi" instead of burning battery on
+  failed retries. Reconnects automatically when WiFi comes back.
+
+## [0.5.0] — 2026-06-01
+
+### Added
+- **Android client.** Native Kotlin + Jetpack Compose app with OkHttp
+  WebSocket, foreground service for background sync, DataStore
+  preferences, boot-start receiver, and exponential-backoff reconnect.
+  The APK is now attached to every GitHub release for sideloading.
+- **Android ↔ Rust server integration tests.** A new CI job builds the
+  Rust hub, starts it, spins up an Android emulator, and verifies the
+  full clip relay flow end-to-end (welcome, multi-client fan-out,
+  auth rejection). 35 Android tests total (23 JVM + 12 instrumented).
+- **Release workflow builds the Android APK** and attaches it to the
+  GitHub release automatically.
+- **Release notes auto-populated from CHANGELOG.md** — the release
+  workflow extracts the matching version section and fills the GitHub
+  release body.
+- **`scripts/release.sh` bumps Android version** — versionName and
+  auto-incremented versionCode are now updated alongside Cargo.toml.
+
+### Fixed
+- **Android cleartext ws:// connections now work to any IP.** The
+  previous network security config used `<domain>` entries for private
+  IP ranges, but Android treats those as literal hostnames — so
+  `ws://192.168.1.50` would silently fail. Switched to
+  `base-config cleartextTrafficPermitted=true` since this is a
+  LAN-first tool where users configure arbitrary IPs.
 
 ## [0.4.6] — 2026-05-27
 
@@ -304,6 +397,11 @@ follows [Semantic Versioning](https://semver.org).
   TLS via `rustls`, native `.deb` / `.rpm` / `.msi` packages, GitHub
   Actions CI matrix on Linux + Windows.
 
+[0.5.4]: https://github.com/davefx/clipboardwire/releases/tag/v0.5.4
+[0.5.3]: https://github.com/davefx/clipboardwire/releases/tag/v0.5.3
+[0.5.2]: https://github.com/davefx/clipboardwire/releases/tag/v0.5.2
+[0.5.1]: https://github.com/davefx/clipboardwire/releases/tag/v0.5.1
+[0.5.0]: https://github.com/davefx/clipboardwire/releases/tag/v0.5.0
 [0.4.6]: https://github.com/davefx/clipboardwire/releases/tag/v0.4.6
 [0.4.5]: https://github.com/davefx/clipboardwire/releases/tag/v0.4.5
 [0.4.4]: https://github.com/davefx/clipboardwire/releases/tag/v0.4.4

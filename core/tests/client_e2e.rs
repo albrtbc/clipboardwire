@@ -206,3 +206,28 @@ async fn late_joiner_supervisor_applies_cached_clip() {
         other => panic!("expected text, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn transport_stops_when_its_handle_is_dropped() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (app, _hub_join) = build_app(server_cfg(addr));
+    let _server_task = tokio::spawn(async move {
+        let _ = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await;
+    });
+
+    let (transport, join) = transport::spawn(client_cfg(addr));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Without a handle nobody can use the transport; it must stop instead
+    // of reconnecting forever.
+    drop(transport);
+    tokio::time::timeout(Duration::from_secs(5), join)
+        .await
+        .expect("transport task should stop after its handle is dropped")
+        .unwrap();
+}

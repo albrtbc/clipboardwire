@@ -22,7 +22,8 @@ items below are fork-specific. For protocol/architecture details see
 | Docker image | `Dockerfile` | Multi-stage build → `distroless/cc` runtime (~30–50 MB, no shell). |
 | Compose template | `docker-compose.yml` | Hub wired to an external (mkcert) cert + a password Docker secret. |
 | Image CI | `.github/workflows/docker.yml` | Builds + pushes to GHCR, versioned from `Cargo.toml`. |
-| Wayland clipboard fix | `core/Cargo.toml` | Enables arboard's `wayland-data-control` so the desktop client sees clipboard changes on wlroots compositors (Hyprland). |
+| Wayland clipboard fix | `core/Cargo.toml` | **Now upstream** (since 0.5.4), no longer a fork change. It enables arboard's `wayland-data-control` so the desktop client sees clipboard changes on wlroots compositors (Hyprland). |
+| Reconnect-loop fix | `core/src/client/transport.rs`, `core/src/client/mod.rs` | After a tray settings save the old transport kept reconnecting forever (1/2/4/8… s). It now stops when its handle is dropped, and cancelling the supervisor aborts it. |
 
 ---
 
@@ -34,7 +35,7 @@ The hub is stateless. With an external TLS cert it has nothing to persist.
 
 CI publishes to GHCR on every push to `main` and on `v*` tags:
 
-- `ghcr.io/PLACEHOLDER_ORG/clipboardwire:<version>` — e.g. `:0.4.6`
+- `ghcr.io/PLACEHOLDER_ORG/clipboardwire:<version>` — e.g. `:0.5.4`
 - `ghcr.io/PLACEHOLDER_ORG/clipboardwire:<version>-<sha>` — **immutable**, pin this
 - `ghcr.io/PLACEHOLDER_ORG/clipboardwire:latest`
 
@@ -88,9 +89,11 @@ firewall. Verify: `curl -sk https://PLACEHOLDER_HOST/healthz` → `ok`.
 
 ### 1. Binary
 
-Either build from this checkout (`cargo build --release -p clipboardwire`,
-binary at `target/release/clipboardwire`) or download the upstream prebuilt
-`clipboardwire-linux-x86_64` from
+Build from this checkout (`cargo build --release -p clipboardwire`, binary at
+`target/release/clipboardwire`). On Arch/Omarchy this is the way: the prebuilt
+`clipboardwire-linux-x86_64` on the releases pages links `libxdo.so.3`, and
+Arch ships `libxdo.so.4`, so the prebuilt binary won't start. Other distros
+can use the prebuilt binary from the
 [upstream releases](https://github.com/davefx/clipboardwire/releases/latest).
 
 Runtime deps on Arch/CachyOS (the tray links libxdo):
@@ -154,10 +157,11 @@ Waybar's `tray` module (Omarchy hides it behind a tray-expander group).
 ### Notes / gotchas
 
 - **Wayland clipboard:** the desktop client needs arboard's
-  `wayland-data-control` backend (this fork enables it). Without it, on
-  Hyprland/wlroots a background poller only sees the X11 (XWayland) clipboard
-  and misses copies from native Wayland apps. The server binary is unaffected
-  (it never touches the clipboard; no libwayland link dependency).
+  `wayland-data-control` backend (upstream enables it since 0.5.4; the fork
+  used to). Without it, on Hyprland/wlroots a background poller only sees the
+  X11 (XWayland) clipboard and misses copies from native Wayland apps. The
+  server binary is unaffected (it never touches the clipboard; no libwayland
+  link dependency).
 - **Single instance only:** a singleton lock means one client per machine.
   Don't launch `clipboardwire` by hand while the service runs. Edit config via
   the tray menu or `clipboardwire settings` (a pure GUI, no connection, no
@@ -171,12 +175,51 @@ Waybar's `tray` module (Omarchy hides it behind a tray-expander group).
 
 ```sh
 git remote add upstream https://github.com/davefx/clipboardwire   # once
-git fetch upstream && git merge upstream/main                     # pull updates
+git fetch upstream && git merge --no-ff upstream/main             # on a branch, not on main
 ```
 
-Fork-specific changes are almost all new files (`server-bin/`, `Dockerfile`,
-`docker-compose.yml`, this doc, the docker workflow) plus two one-line edits
-(`Cargo.toml` workspace member, `core/Cargo.toml` arboard feature), so merges
-rarely conflict. The image version is read from `Cargo.toml`, so pulling an
-upstream version bump republishes the image at the new version automatically.
-```
+Most fork changes are new files (`server-bin/`, this doc, the other workflows)
+plus a one-line edit (the `Cargo.toml` workspace member), which merge cleanly.
+But the fork replaces four files that upstream also has: `Dockerfile`,
+`docker-compose.yml`, `.dockerignore` and `.github/workflows/docker.yml`. They
+conflict whenever upstream edits them. The image version is read from
+`Cargo.toml`, so pulling an upstream version bump republishes the image at the
+new version automatically.
+
+Conflict rules:
+
+- `Dockerfile`, `docker-compose.yml` and `.github/workflows/docker.yml`: keep
+  the fork's side (`git checkout --ours`), because they build and run the
+  headless hub image that the server uses.
+- `.dockerignore`: the union of both lists.
+- `CHANGELOG.md`: keep both, upstream's new sections plus the fork's
+  `-fork.N` sections, newest first. Never take upstream's file with
+  `--theirs`: it would delete the fork sections.
+- Everything else: upstream's version wins.
+- `.env.example` is upstream's, for its Traefik setup (`CLIPBOARDWIRE_PASSWORD`
+  in `.env`). The fork's `docker-compose.yml` ignores it and reads
+  `CLIPBOARDWIRE_PASSWORD_FILE`; it is left untouched to avoid conflicts.
+
+Rules for a sync and a release:
+
+- **Land the sync with a merge commit, never squash or rebase-merge.** A
+  squash drops the upstream history, and every later sync would conflict
+  again. Run `git merge --no-ff upstream/main` on a branch, open a PR, and
+  land it with `gh pr merge --merge`.
+- **Push only `main` and the one fork tag.** Never `git push --tags` or
+  `--follow-tags`: this clone holds upstream's release tags (`v0.1.0`
+  onwards), and pushing them would run the release and image workflows on
+  upstream's trees. Push the tag by its full ref name:
+  `git push origin refs/tags/v<upstream>-fork.N`.
+- **Fork releases are tagged `v<upstream>-fork.N`**, for example
+  `v0.5.4-fork.1`, with the `Cargo.toml` version left at upstream's. Add a
+  `## [<upstream>-fork.N]` section to `CHANGELOG.md` first: `release.yml`
+  takes the release notes from it. release-please is manual-only
+  (`workflow_dispatch`) and does not tag.
+- **A CI-built APK can't upgrade an installed one.** Every CI run signs the
+  debug APK with a new throwaway key, and Android refuses an update signed
+  with a different key. Build locally instead (`./gradlew assembleDebug` in
+  `android/`) with a kept debug keystore (the machine's `~/.android/debug.keystore` by
+  default, or under `$ANDROID_USER_HOME`; keep it backed up); builds signed
+  with the same key then upgrade in place. Switching from a CI build to a local one
+  needs one uninstall, which clears the app's settings.

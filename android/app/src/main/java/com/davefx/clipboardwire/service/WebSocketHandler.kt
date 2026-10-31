@@ -24,6 +24,7 @@ class WebSocketHandler(
 
     fun connect() {
         val builder = OkHttpClient.Builder()
+            .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
             .pingInterval(30, TimeUnit.SECONDS)
             .readTimeout(90, TimeUnit.SECONDS)
 
