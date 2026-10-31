@@ -2,13 +2,17 @@
 target/
 android/
 assets/
+packaging/
 .git/
 .github/
 *.md
+*.log
 docker-compose.yml
 .dockerignore
 Dockerfile
 # Local secrets / certs must never enter the image build context.
+.env
+.env.*
 cw_pass.txt
 *.crt
 *.key

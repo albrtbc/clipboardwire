@@ -35,14 +35,16 @@ cargo generate-lockfile --manifest-path "$ROOT/Cargo.toml"
 # 3. README.md install URLs + "Currently shipping" line
 sed -i "s/$PREV_VERSION/$VERSION/g" "$ROOT/README.md"
 
-# 4. CHANGELOG.md — insert new section after the preamble
-# Find the first "## [" line and insert before it
-sed -i "/^## \[/i\\
-## [$VERSION] — $DATE\\
-\\
-### Changed\\
-- (fill in before pushing)\\
-" "$ROOT/CHANGELOG.md"
+# 4. Android versionName + auto-increment versionCode
+ANDROID_GRADLE="$ROOT/android/app/build.gradle.kts"
+sed -i "s/versionName = \"$PREV_VERSION\"/versionName = \"$VERSION\"/" "$ANDROID_GRADLE"
+OLD_CODE="$(grep 'versionCode' "$ANDROID_GRADLE" | sed 's/[^0-9]//g')"
+NEW_CODE=$((OLD_CODE + 1))
+sed -i "s/versionCode = $OLD_CODE/versionCode = $NEW_CODE/" "$ANDROID_GRADLE"
+echo "Android: versionCode $OLD_CODE → $NEW_CODE, versionName → $VERSION"
+
+# 5. CHANGELOG.md — insert new section before the first "## [" line only
+sed -i "0,/^## \[/s//## [$VERSION] — $DATE\n\n### Changed\n- (fill in before pushing)\n\n## [/" "$ROOT/CHANGELOG.md"
 
 # Add link reference
 sed -i "/^\[$PREV_VERSION\]: /i\\
