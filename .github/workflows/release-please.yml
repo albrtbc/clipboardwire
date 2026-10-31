@@ -1,22 +1,23 @@
-# Automated releases via release-please.
+# release-please, run by hand only.
 #
-# On every push to main, release-please reads Conventional Commits and keeps
-# a "release PR" open that bumps the version (Cargo.toml [workspace.package])
-# and updates CHANGELOG.md. Merging that PR creates the GitHub Release + the
-# `vX.Y.Z` tag.
+# This fork tags its releases manually as `v<upstream>-fork.N` (for example
+# `v0.5.4-fork.1`) and takes its version number from upstream through merges,
+# so release-please must not open release PRs or tag on its own. It would
+# propose a version that does not exist upstream and could tag an old one.
+# It is kept, with `.release-please-manifest.json` at the upstream version, so
+# it can still be started from the Actions tab (workflow_dispatch) if wanted.
 #
-# That tag then triggers the existing `release.yml` (desktop binaries) and
-# `docker.yml` (image) workflows — BUT only if the tag is created with a PAT.
-# Tags created with the default GITHUB_TOKEN do NOT trigger other workflows
-# (GitHub's anti-recursion rule). So set a repo secret RELEASE_PLEASE_TOKEN to
-# a fine-grained PAT with `contents: write` + `workflows`/`actions` on this
-# repo. Without it, release-please still opens/merges the PR and creates the
-# release, but the binary builds won't fire automatically.
+# When run, release-please reads Conventional Commits, keeps a "release PR"
+# open that bumps the version (Cargo.toml [workspace.package]) and updates
+# CHANGELOG.md, and merging that PR creates the GitHub Release + the `vX.Y.Z`
+# tag. Tags created with the default GITHUB_TOKEN do NOT trigger other
+# workflows (GitHub's anti-recursion rule), so set a repo secret
+# RELEASE_PLEASE_TOKEN to a fine-grained PAT if `release.yml` and `docker.yml`
+# should fire from that tag.
 name: release-please
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -26,7 +27,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}

@@ -4,6 +4,38 @@ All notable changes to clipboardwire are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org).
 
+## [0.5.4-fork.1] — 2026-10-31
+
+Fork release of [`albrtbc/clipboardwire`](https://github.com/albrtbc/clipboardwire).
+Synced with upstream v0.5.4.
+
+### Added
+- **Headless hub image on GHCR.** The new `server-bin` crate builds a
+  `clipboardwire-server` binary with no tray/GTK dependency, packaged by the
+  fork's `Dockerfile` on a distroless runtime. `docker.yml` publishes it to
+  `ghcr.io/albrtbc/clipboardwire`, tagged from the version in `Cargo.toml`
+  (`:0.5.4`, `:0.5.4-<sha>`, `:latest`).
+- **Android APK as a CI artifact.** `android-apk.yml` builds a debug APK on
+  every push to `main` and on `v*` tags.
+- **`DEPLOYMENT.md`.** Notes for self-hosting the hub in Docker and running
+  the Linux/Wayland client as a systemd user service, plus how the fork
+  stays in sync with upstream.
+
+### Changed
+- **Synced with upstream v0.5.4.** Brings in upstream's changes since 0.4.6
+  (see 0.5.0 to 0.5.4 below), including upstream's Android fixes (TLS over
+  HTTP/1.1, the Android 14+ foreground service, Wi-Fi-aware reconnect, the
+  battery-optimization prompt).
+- **Wayland clipboard fix now comes from upstream.** Enabling arboard's
+  `wayland-data-control` feature, which the fork had made on its own, is part
+  of upstream since 0.5.4; it is no longer a fork change.
+- **release-please is manual.** `release-please.yml` runs only on
+  `workflow_dispatch`, and its manifest is at 0.5.4. Fork releases are tagged
+  by hand as `v<upstream>-fork.N`.
+- **GitHub Actions: Node.js 24.** The fork's own workflows (`docker.yml`,
+  `android-apk.yml`, `release-please.yml`) use Node.js 24 action
+  majors (the same as upstream where both use an action).
+
 ## [0.5.4] — 2026-09-30
 
 ### Fixed
