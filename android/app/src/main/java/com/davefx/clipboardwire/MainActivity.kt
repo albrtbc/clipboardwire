@@ -27,15 +27,23 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
+import com.davefx.clipboardwire.send.ClipReader
+import com.davefx.clipboardwire.send.SendBridge
+import com.davefx.clipboardwire.send.SendOutcome
+import com.davefx.clipboardwire.send.Trigger
 import com.davefx.clipboardwire.service.ClipboardSyncService
 import com.davefx.clipboardwire.service.Settings
 import com.davefx.clipboardwire.ui.ClipboardwireTheme
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
+
+    private var autoSendJob: Job? = null
 
     private var onBatteryResult: (() -> Unit)? = null
     private val batteryOptimizationLauncher =
@@ -63,6 +71,32 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // Focus rather than onResume: since Android 10 only the focused app can read the clipboard
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus || SendBridge.service == null) return
+        if (autoSendJob?.isActive == true) return
+        val read = ClipReader.fromClipboard(this)
+        if (read?.sensitive == true) return
+        // Don't re-encode an image an auto-send already handled. A provider can reuse the same
+        // URI for a new copy, so the clip timestamp is part of the key
+        val imageKey = read?.imageUri?.let { it to read.timestamp }
+        if (imageKey != null && imageKey == lastAutoImage) return
+        autoSendJob = lifecycleScope.launch {
+            val resolved = ClipReader.resolveImage(this@MainActivity, read)
+            val outcome = SendBridge.sendAndReport(this@MainActivity, resolved, Trigger.AUTO)
+            // Keep retrying while the send couldn't happen at all
+            if (imageKey != null && outcome !in UNDELIVERED) lastAutoImage = imageKey
+        }
+    }
+
+    private companion object {
+        val UNDELIVERED =
+            setOf(SendOutcome.NOT_CONNECTED, SendOutcome.NOT_RUNNING, SendOutcome.READ_FAILED)
+
+        @Volatile var lastAutoImage: Pair<Uri, Long>? = null
     }
 
     private fun isBatteryOptimized(): Boolean {
