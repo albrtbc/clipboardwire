@@ -4,6 +4,37 @@ All notable changes to clipboardwire are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org).
 
+## [0.5.4-fork.2] — 2026-11-01
+
+Fork release of [`albrtbc/clipboardwire`](https://github.com/albrtbc/clipboardwire).
+Still synced with upstream v0.5.4.
+
+### Added
+- **Send the phone's clipboard to the desktop.** Android 10+ blocks
+  clipboard reads from the background, so the old listener only ever sent
+  clips copied inside the app. There are four ways to send:
+  - the **"Send clipboard"** action on the sync notification and a **Quick
+    Settings tile**, "Send clipboard". Both open a transparent activity that
+    takes focus for a moment to read the clipboard;
+  - a **share target**, "Send to desktop", for text and images;
+  - **auto-send** when the app's main screen gets focus, if the clip is new.
+    It shows a toast only when it sends, skips sensitive clips (password
+    managers) and never echoes back a clip received from the desktop.
+
+  A toast tells you the result: sent, already on the desktop, nothing to
+  send, not connected, sync off, or a read failure. Images are re-encoded as
+  PNG and scaled down to stay under OkHttp's 16 MiB WebSocket message limit.
+
+### Notes
+- **Version.** `versionCode` and `versionName` stay at upstream's 6 and
+  0.5.4, so the app still shows 0.5.4. An equal `versionCode` installs as an
+  in-place update.
+- **Which APK.** Install the locally built APK
+  (`clipboardwire-0.5.4-fork.2.apk`, signed with the kept debug key) over
+  fork.1. The release's CI-built `clipboardwire-android.apk` is signed with a
+  throwaway key and needs an uninstall first.
+- **Unchanged.** The hub and the Linux client.
+
 ## [0.5.4-fork.1] — 2026-10-31
 
 Fork release of [`albrtbc/clipboardwire`](https://github.com/albrtbc/clipboardwire).

@@ -16,6 +16,7 @@ import android.util.Base64
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
+import com.davefx.clipboardwire.send.*
 import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -56,6 +57,7 @@ class ClipboardSyncService : Service(), WebSocketHandler.Listener {
             startForeground(NOTIFICATION_ID, buildNotification("Starting…", null))
         }
         clipboardManager.addPrimaryClipChangedListener(clipListener)
+        SendBridge.service = this
         scope.launch { connectLoop() }
     }
 
@@ -158,6 +160,7 @@ class ClipboardSyncService : Service(), WebSocketHandler.Listener {
 
     override fun onConnected(welcome: Protocol.Frame.Welcome) {
         clientId = welcome.clientId
+        connected = true
         connectedSince = System.currentTimeMillis()
         backoff = INITIAL_BACKOFF_MS
         updateNotification("Connected", serverLabel)
@@ -171,6 +174,7 @@ class ClipboardSyncService : Service(), WebSocketHandler.Listener {
     }
 
     override fun onDisconnected(reason: String) {
+        connected = false
         Log.w(TAG, "disconnected: $reason")
         if (System.currentTimeMillis() - connectedSince > STABLE_MS) {
             backoff = INITIAL_BACKOFF_MS
@@ -240,6 +244,39 @@ class ClipboardSyncService : Service(), WebSocketHandler.Listener {
         }
     }
 
+    @Volatile private var connected = false
+
+    fun sendFromForeground(
+        payload: ClipPayload,
+        trigger: Trigger,
+        fromOwnProvider: Boolean,
+        sensitive: Boolean
+    ): SendOutcome {
+        val outcome = SendDecision.decide(
+            payload, trigger, fromOwnProvider, sensitive,
+            serviceRunning = true,
+            connected = connected,
+            lastSent = lastSentContent.get(),
+            lastReceived = lastReceivedContent.get()
+        )
+        if (outcome != SendOutcome.SENT) return outcome
+
+        val json = when (payload) {
+            is ClipPayload.Text -> Protocol.buildClipText(payload.text)
+            is ClipPayload.Image -> Protocol.buildClipImage(payload.base64Png)
+        }
+        val ok = wsHandler?.sendText(json) ?: false
+        if (!ok) return SendOutcome.NOT_CONNECTED
+        lastSentContent.set(payload.fingerprint)
+        when (payload) {
+            is ClipPayload.Text ->
+                Log.d(TAG, "sent text clip (${payload.text.length} chars) on request")
+            is ClipPayload.Image ->
+                Log.d(TAG, "sent image clip (${payload.base64Png.length} base64 chars) on request")
+        }
+        return SendOutcome.SENT
+    }
+
     // --- Notification ---
 
     private fun buildNotification(status: String, subtitle: String? = null): Notification {
@@ -263,6 +300,10 @@ class ClipboardSyncService : Service(), WebSocketHandler.Listener {
             .setSmallIcon(android.R.drawable.ic_menu_share)
             .setOngoing(true)
             .setContentIntent(openIntent)
+            .addAction(
+                android.R.drawable.ic_menu_send, "Send clipboard",
+                SendClipboardActivity.pendingIntent(this)
+            )
             .addAction(android.R.drawable.ic_delete, "Stop", stopPending)
             .build()
     }
@@ -318,6 +359,7 @@ class ClipboardSyncService : Service(), WebSocketHandler.Listener {
 
     override fun onDestroy() {
         stopping = true
+        if (SendBridge.service === this) SendBridge.service = null
         unregisterNetworkCallback()
         networkReady.close()
         clipboardManager.removePrimaryClipChangedListener(clipListener)

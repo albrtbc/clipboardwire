@@ -24,6 +24,7 @@ items below are fork-specific. For protocol/architecture details see
 | Image CI | `.github/workflows/docker.yml` | Builds + pushes to GHCR, versioned from `Cargo.toml`. |
 | Wayland clipboard fix | `core/Cargo.toml` | **Now upstream** (since 0.5.4), no longer a fork change. It enables arboard's `wayland-data-control` so the desktop client sees clipboard changes on wlroots compositors (Hyprland). |
 | Reconnect-loop fix | `core/src/client/transport.rs`, `core/src/client/mod.rs` | After a tray settings save the old transport kept reconnecting forever (1/2/4/8… s). It now stops when its handle is dropped, and cancelling the supervisor aborts it. |
+| Android send-to-desktop | `android/app/src/main/java/com/davefx/clipboardwire/send/`, `android/app/src/main/res/values/themes_fork.xml`, `android/app/src/main/res/drawable/ic_send_clipboard.xml`, `android/app/src/test/java/com/davefx/clipboardwire/send/` | Notification action, Quick Settings tile, share target and auto-send on focus. Works around Android 10+'s background clipboard restriction. |
 
 ---
 
@@ -195,6 +196,22 @@ Conflict rules:
 - `CHANGELOG.md`: keep both, upstream's new sections plus the fork's
   `-fork.N` sections, newest first. Never take upstream's file with
   `--theirs`: it would delete the fork sections.
+- The Android send-to-desktop feature lives in `send/`, in the fork-only
+  files `android/app/src/main/res/values/themes_fork.xml`,
+  `android/app/src/main/res/drawable/ic_send_clipboard.xml` and
+  `android/app/src/test/java/com/davefx/clipboardwire/send/`, plus small hooks
+  in upstream files:
+  - `ClipboardSyncService.kt`: the `send.*` import, `SendBridge.service` set
+    and cleared in `onCreate` and `onDestroy`, the `connected` flag in
+    `onConnected` and `onDisconnected`, the "Send clipboard" action in
+    `buildNotification`, and the `connected`/`sendFromForeground` block after
+    `onLocalClipboardChanged`;
+  - three entries in `AndroidManifest.xml`;
+  - `MainActivity.kt`: the `send.*`, `lifecycleScope` and `Job` imports, the
+    `autoSendJob` field after `notificationPermissionLauncher`, and
+    `onWindowFocusChanged` with its companion right after `onCreate`.
+
+  On a conflict, take upstream's side and re-apply the hook.
 - Everything else: upstream's version wins.
 - `.env.example` is upstream's, for its Traefik setup (`CLIPBOARDWIRE_PASSWORD`
   in `.env`). The fork's `docker-compose.yml` ignores it and reads
@@ -219,7 +236,15 @@ Rules for a sync and a release:
 - **A CI-built APK can't upgrade an installed one.** Every CI run signs the
   debug APK with a new throwaway key, and Android refuses an update signed
   with a different key. Build locally instead (`./gradlew assembleDebug` in
-  `android/`) with a kept debug keystore (the machine's `~/.android/debug.keystore` by
-  default, or under `$ANDROID_USER_HOME`; keep it backed up); builds signed
-  with the same key then upgrade in place. Switching from a CI build to a local one
-  needs one uninstall, which clears the app's settings.
+  `android/`) with a kept debug keystore (`debug.keystore` under
+  `$ANDROID_USER_HOME`, else `$XDG_CONFIG_HOME/.android` when that is set,
+  else `~/.android`; on this machine `~/.config/.android`; keep it backed
+  up); builds signed with the same key then upgrade in place. Switching from
+  a CI build to a local one needs one uninstall, which clears the app's
+  settings. Set `ANDROID_USER_HOME` explicitly to the directory that holds the
+  kept keystore: if `XDG_CONFIG_HOME` changes or is unset, Gradle creates a
+  new key and the update fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Fork
+  releases also leave `versionCode` and `versionName` at upstream's values,
+  which `scripts/release.sh` owns. An equal `versionCode` still installs in
+  place. A fork bump would conflict with upstream's next bump, and a second
+  fork bump would make upstream's next `versionCode` a downgrade.
